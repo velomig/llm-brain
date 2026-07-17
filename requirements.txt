@@ -1,0 +1,12 @@
+# Pinned to the installed, known-working versions (lower bound) with a cap below
+# the next major, so patch/minor fixes are allowed but a breaking major bump can't
+# silently land. Bump these deliberately after testing ingest + chat.
+chromadb>=1.5.9,<2
+ollama>=0.6.2,<1
+rank-bm25>=0.2.2,<0.3
+numpy>=2.5.0,<3
+fastapi>=0.138.0,<1
+uvicorn>=0.49.0,<1
+pypdf>=6.14.2,<7
+google-api-python-client>=2.0,<3
+google-auth-oauthlib>=1.2,<2

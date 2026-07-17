@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🧠 Neural Map</title>
+<style>
+  :root {
+    --bg: #0a0e17; --panel: #121826; --panel2: #1a2333; --border: #243044;
+    --text: #e6ecf5; --muted: #8595ad; --accent: #7c5cff; --accent2: #2dd4bf;
+    --user: #2a3550; --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 70% -10%, #16203a 0%, var(--bg) 55%);
+    color: var(--text);
+  }
+  /* top bar */
+  .topbar {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    background: rgba(10,14,23,.6); backdrop-filter: blur(8px);
+  }
+  .brand { font-size: 18px; font-weight: 650; display: flex; align-items: baseline; gap: 10px; padding-top: 3px; }
+  .brand small { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; justify-content: flex-end; min-width: 0; flex: 1; }
+  .controls label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 4px; }
+  select, input, textarea, button {
+    font: inherit; color: var(--text); background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; outline: none;
+  }
+  select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+  select { min-width: 200px; }
+  #ctx { width: 110px; }
+  .hint { color: var(--muted); font-size: 10px; }
+  #ctxusage { max-width: 190px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #ctxsession { max-width: 150px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #ctxmeter { width: 110px; height: 5px; border: 0; accent-color: var(--accent2); }
+  #ctxmeter.context-warn { accent-color: #f5b942; }
+  #ctxmeter.context-high { accent-color: #ef6079; }
+	  button { cursor: pointer; background: var(--accent); border: none; font-weight: 600; }
+	  button:hover { filter: brightness(1.1); }
+	  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 6px 10px; white-space: nowrap; }
+	  button.ghost.pending-hot {
+	    color: var(--text); border-color: rgba(45,212,191,.75); background: rgba(45,212,191,.14);
+	    box-shadow: 0 0 0 1px rgba(45,212,191,.16), 0 0 18px rgba(45,212,191,.22);
+	  }
+	  button.ghost.pending-hot::after {
+	    content: attr(data-count); display: inline-flex; align-items: center; justify-content: center;
+	    min-width: 18px; height: 18px; margin-left: 7px; padding: 0 5px; border-radius: 999px;
+	    background: var(--accent2); color: #06100f; font-size: 11px; font-weight: 750; font-variant-numeric: tabular-nums;
+	  }
+	  .retrieval-popover {
+	    position: fixed; top: 58px; right: 20px; z-index: 12; width: min(420px, calc(100vw - 40px));
+	    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+	    box-shadow: 0 18px 50px rgba(0,0,0,.35);
+	  }
+	  .retrieval-popover.hidden { display: none; }
+	  .retrieval-row { display: grid; grid-template-columns: 96px 1fr 44px; gap: 10px; align-items: center; margin: 8px 0; }
+	  .retrieval-row label { color: var(--muted); font-size: 12px; }
+	  .retrieval-row input[type=range] { width: 100%; }
+	  .retrieval-row output { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+	  #topK { width: 72px; }
+	  /* layout */
+  .layout { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+  .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+  .reminders { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: rgba(124,92,255,.07); }
+  .reminders.hidden { display: none; }
+  .reminders .rem-title { width: 100%; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .rem-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 5px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+  .rem-chip .due { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rem-chip.overdue { border-color: #703040; background: rgba(180,35,60,.18); }
+  .rem-chip.overdue .due { color: #ff9aaa; }
+  .initiative { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: rgba(45,212,191,.07); }
+  .initiative.hidden { display: none; }
+  .initiative .init-title { width: 100%; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .init-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font-size: 12px; padding: 6px 10px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); }
+  .init-chip .kind { color: var(--accent2); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+  .init-chip .text { min-width: 0; overflow-wrap: anywhere; }
+  .init-chip button { flex: 0 0 auto; background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 2px 7px; border-radius: 6px; }
+  .awareness { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.035); }
+  .awareness.hidden { display: none; }
+  .awareness-main { min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .awareness-title { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .aware-focus { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+  .aware-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,.04); color: var(--muted); }
+  .aware-next { min-width: 180px; max-width: min(420px, 42vw); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
+  .toolnote { color: var(--accent2); font-size: 11.5px; }
+  .messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { display: flex; }
+  .msg.user { justify-content: flex-end; }
+	  .bubble {
+	    position: relative; max-width: 76%; padding: 12px 44px 12px 16px; border-radius: var(--radius); line-height: 1.5;
+	    background: var(--panel); border: 1px solid var(--border);
+	  }
+	  .bubble-content { white-space: pre-wrap; overflow-wrap: anywhere; }
+	  .copy-bubble {
+	    position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+	    padding: 0; border-radius: 7px; background: transparent; border: 1px solid transparent; color: var(--muted); font-size: 15px; line-height: 1;
+	    opacity: .65;
+	  }
+	  .copy-bubble:hover { opacity: 1; border-color: var(--border); background: rgba(255,255,255,.04); filter: none; }
+	  .copy-bubble.copied { color: var(--accent2); border-color: rgba(45,212,191,.45); }
+	  .msg.user .bubble { background: var(--user); border-color: #34436a; }
+	  .bubble.typing { color: var(--muted); }
+	  .bubble.typing .copy-bubble { display: none; }
+  .composer { display: flex; gap: 10px; padding: 16px 20px; border-top: 1px solid var(--border); background: rgba(18,24,38,.5); }
+  .composer textarea { flex: 1; resize: none; max-height: 160px; }
+  .composer button { padding: 0 22px; }
+  /* sidebar */
+  .sidebar { display: flex; flex-direction: column; min-height: 0; background: rgba(18,24,38,.35); }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 10px; }
+  .side-head h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .side-head h2 { white-space: nowrap; }
+	  .side-actions { display: flex; gap: 8px; }
+	  .side-actions .ghost { padding: 5px 9px; font-size: 11px; }
+	  .add-form { padding: 0 18px 12px; display: flex; flex-direction: column; gap: 8px; }
+	  .add-form .row { display: flex; gap: 8px; }
+	  .add-form .row input { flex: 1; min-width: 0; }
+	  .add-form .row input[type=number] { flex: 0 0 56px; }
+	  .recalled { flex: 1; overflow-y: auto; padding: 4px 18px 18px; display: flex; flex-direction: column; gap: 10px; }
+	  .active-memories { padding: 0 18px 10px; display: grid; gap: 7px; border-bottom: 1px solid var(--border); }
+	  .active-memories.hidden { display: none; }
+	  .active-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+	  .active-memory { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+	  .active-memory-text { min-width: 0; background: transparent; border: 0; color: var(--text); text-align: left; font-size: 12px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+	  .active-remove { width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); cursor: pointer; }
+	  .empty { color: var(--muted); font-size: 13px; line-height: 1.5; }
+	  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+	  .card-text { font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-height: 88px; overflow: hidden; }
+	  .card-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+	  .ghost.mini { padding: 4px 8px; font-size: 11px; }
+	  .bar { height: 5px; background: var(--panel2); border-radius: 3px; margin: 10px 0 6px; overflow: hidden; }
+	  .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+	  .card-meta { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+	  .manager {
+	    position: fixed; inset: 56px 0 0 0; z-index: 10; display: flex; flex-direction: column;
+	    background: var(--bg); border-top: 1px solid var(--border);
+	  }
+	  .manager.hidden { display: none; }
+	  .manager-head {
+	    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+	    padding: 14px 20px; border-bottom: 1px solid var(--border); background: rgba(18,24,38,.86);
+	  }
+	  .manager-head h2 { margin: 0; font-size: 16px; }
+	  .manager-tools { display: grid; grid-template-columns: minmax(180px, 1fr) 180px 220px repeat(2, auto); gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+	  .manager-list { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; gap: 10px; align-content: start; }
+	  .memory-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+	  .memory-text { white-space: pre-wrap; line-height: 1.45; max-height: 120px; overflow: auto; font-size: 13px; }
+	  .memory-meta { margin-top: 8px; color: var(--muted); font-size: 11px; }
+	  .memory-actions { display: flex; flex-direction: column; gap: 8px; min-width: 88px; }
+	  .state-grid { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-content: start; }
+	  .state-col { display: flex; flex-direction: column; min-width: 0; gap: 10px; }
+	  .state-col h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+	  .state-form { display: grid; gap: 8px; }
+	  .state-form textarea { resize: vertical; min-height: 70px; }
+	  .state-form .row { display: grid; grid-template-columns: 1fr 90px; gap: 8px; }
+	  .state-list { display: grid; gap: 8px; }
+	  .state-row { display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+	  .state-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; font-size: 13px; }
+	  .state-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+	  .state-actions .ghost { padding: 4px 8px; font-size: 11px; }
+	  .action-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+	  .action-title { font-size: 13px; font-weight: 650; }
+	  .action-meta { margin-top: 6px; color: var(--muted); font-size: 11px; }
+	  .action-args { margin-top: 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); }
+	  .action-buttons { display: flex; flex-direction: column; gap: 8px; min-width: 88px; }
+	  .safety-tools { grid-template-columns: auto 1fr; }
+	  .safety-grid { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; grid-template-columns: minmax(280px, .9fr) minmax(0, 1.4fr); gap: 14px; align-content: start; }
+	  .permission-row, .audit-row { display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+	  .permission-head, .audit-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+	  .permission-name, .audit-title { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+	  .permission-meta, .audit-meta { color: var(--muted); font-size: 11px; }
+	  .switch-row { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+	  .switch-row input { width: 18px; height: 18px; }
+	  .audit-body { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); }
+	  .preview-block { margin-top: 8px; padding: 8px; border-radius: 7px; background: rgba(255,255,255,.03); border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); max-height: 220px; overflow: auto; }
+	  .detail-panel {
+	    position: fixed; inset: 86px 36px 36px 36px; z-index: 14; display: grid; grid-template-rows: auto 1fr;
+	    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 18px 60px rgba(0,0,0,.45);
+	  }
+	  .detail-panel.hidden { display: none; }
+	  .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+	  .detail-head h2 { margin: 0; font-size: 15px; }
+	  .detail-body { overflow: auto; padding: 16px; display: grid; gap: 12px; }
+	  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 8px; font-size: 13px; }
+	  .kv .k { color: var(--muted); }
+	  .mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
+	  .danger { background: #b4233c; color: white; }
+	  .danger.ghost { background: transparent; color: #ff9aaa; border: 1px solid #703040; }
+	  .issue-error { color: #ff9aaa; }
+	  #stopBtn:disabled { opacity: .35; cursor: default; }
+	  .hidden { display: none; }
+	  @media (max-width: 760px) {
+	    .topbar { padding: 10px 12px; gap: 10px; }
+	    .brand { width: 100%; }
+	    .controls { justify-content: flex-start; }
+	    select { min-width: 150px; }
+	    .layout { grid-template-columns: 1fr; }
+	    .sidebar { display: none; }
+	    .manager-tools { grid-template-columns: 1fr; }
+	    .state-grid { grid-template-columns: 1fr; }
+	    .safety-grid { grid-template-columns: 1fr; }
+	    .awareness { grid-template-columns: 1fr; }
+	    .aware-next { max-width: none; text-align: left; }
+	  }
+	  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+	    <div class="brand">🧠 Neural&nbsp;Map <small id="stats">…</small></div>
+		    <div class="controls">
+		      <button id="manageTopBtn" class="ghost" type="button">Manage</button>
+		      <button id="stateBtn" class="ghost" type="button">State</button>
+		      <button id="systemsBtn" class="ghost" type="button">Systems</button>
+		      <button id="observabilityBtn" class="ghost" type="button">Observe</button>
+		      <button id="actionsBtn" class="ghost" type="button">Actions</button>
+		      <button id="safetyBtn" class="ghost" type="button">Safety</button>
+		      <button id="retrievalBtn" class="ghost" type="button">Retrieval</button>
+		      <button id="reflectBtn" class="ghost" type="button" title="Distil insights & refresh reminders">Reflect</button>
+		      <button id="compactBtn" class="ghost" type="button" title="Summarize old raw episodes before deleting them">Compact</button>
+		      <button id="sleepBtn" class="ghost" type="button" title="Cold-archive weak episodes and synthesize speculative hunches">Sleep</button>
+		      <button id="pruneBtn" class="ghost" type="button" title="Forget old, low-value, never-recalled episodes">Prune</button>
+          <button id="briefingBtn" class="ghost" type="button" title="Show due reminders, open loops, and suggested next action">Briefing</button>
+          <button id="willBtn" class="ghost" type="button" title="Run autonomous curiosity/worry review">Will</button>
+          <button id="diagnosticsBtn" class="ghost" type="button" title="Show health, logs, timeline, and graph stats">Diagnostics</button>
+          <button id="resetEmotionBtn" class="ghost" type="button" title="Reset affective stance to neutral">Reset Mood</button>
+          <label>Initiative
+            <select id="initiativeMode">
+              <option value="quiet">Quiet</option>
+              <option value="helpful">Helpful</option>
+              <option value="active">Active</option>
+              <option value="coach">Coach</option>
+            </select>
+          </label>
+		      <label>Model <select id="model"></select></label>
+	      <label>Context (num_ctx)
+        <input id="ctx" type="number" min="512" max="262144" step="512" value="262144">
+        <span id="ctxhint" class="hint"></span>
+        <span id="ctxusage" class="hint" title="Peak input prompt usage will appear after a completed turn.">usage after next response</span>
+        <progress id="ctxmeter" max="100" value="0" aria-label="Context utilization percent"></progress>
+        <span id="ctxsession" class="hint" title="Cumulative input tokens processed this session."></span>
+      </label>
+    </div>
+	  </header>
+
+	  <section id="retrievalPanel" class="retrieval-popover hidden" aria-label="Retrieval settings">
+	    <div class="retrieval-row">
+	      <label for="topK">Top K</label>
+	      <input id="topK" type="number" min="1" max="25" step="1" value="5">
+	      <output id="topKVal">5</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wSemantic">Semantic</label>
+	      <input id="wSemantic" type="range" min="0" max="5" step="0.1" value="1">
+	      <output id="wSemanticVal">1.0</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wKeyword">BM25</label>
+	      <input id="wKeyword" type="range" min="0" max="5" step="0.1" value="0.5">
+	      <output id="wKeywordVal">0.5</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wRecency">Recency</label>
+	      <input id="wRecency" type="range" min="0" max="5" step="0.1" value="0.3">
+	      <output id="wRecencyVal">0.3</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wImportance">Importance</label>
+	      <input id="wImportance" type="range" min="0" max="5" step="0.1" value="1">
+	      <output id="wImportanceVal">1.0</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wGraph">Graph</label>
+	      <input id="wGraph" type="range" min="0" max="5" step="0.1" value="0.6">
+	      <output id="wGraphVal">0.6</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wSensory">Sensory</label>
+	      <input id="wSensory" type="range" min="0" max="5" step="0.1" value="0.7">
+	      <output id="wSensoryVal">0.7</output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="wCategory">Scope</label>
+	      <select id="wCategory"><option value="">All categories</option></select>
+	      <output></output>
+	    </div>
+	    <div class="retrieval-row">
+	      <label for="recallQuery">Recall</label>
+	      <input id="recallQuery" placeholder="Query memories">
+	      <button id="recallBtn" class="ghost" type="button">Run</button>
+	    </div>
+	    <button id="resetRetrieval" class="ghost" type="button">Reset</button>
+	  </section>
+
+  <main class="layout">
+    <section class="chat">
+      <div id="reminders" class="reminders hidden"></div>
+      <div id="initiative" class="initiative hidden"></div>
+      <div id="awareness" class="awareness hidden"></div>
+      <div id="messages" class="messages"></div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" placeholder="Ask anything…   (⏎ send · ⇧⏎ newline · /clear · /purge · /memory on)"></textarea>
+        <button id="stopBtn" class="danger ghost" type="button" title="Stop the current reply" disabled>⏹ Stop</button>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+
+    <aside class="sidebar">
+      <div class="side-head">
+        <h2>Recalled</h2>
+	        <div class="side-actions">
+	          <button id="manageBtn" class="ghost" type="button">Manage</button>
+	          <button id="ingestBtn" class="ghost" type="button" title="Ingest documents, images, or audio">⬆ Files</button>
+	          <button id="toggleAdd" class="ghost" type="button">＋ Memory</button>
+	        </div>
+      </div>
+      <input id="ingestFile" type="file" accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp,.tif,.tiff,.aac,.aif,.aiff,.flac,.m4a,.mp3,.ogg,.wav,text/markdown,text/plain,application/pdf,image/*,audio/*" multiple hidden>
+      <form id="addForm" class="add-form hidden">
+        <textarea id="memText" rows="2" placeholder="A fact to remember…"></textarea>
+        <div class="row">
+          <input id="memCat" placeholder="category" value="note">
+          <input id="memImp" type="number" min="1" max="5" value="5" title="importance 1-5">
+          <button type="submit">Save</button>
+        </div>
+      </form>
+      <div id="activeMemories" class="active-memories hidden"></div>
+      <div id="recalled" class="recalled">
+        <p class="empty">Memories injected into the last answer appear here, each with its hybrid score breakdown (semantic + keyword + recency).</p>
+      </div>
+    </aside>
+	  </main>
+
+	  <section id="manager" class="manager hidden" aria-label="Memory manager">
+	    <div class="manager-head">
+	      <h2>Memory Manager</h2>
+	      <button id="closeManager" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="manager-tools">
+	      <input id="memSearch" placeholder="Search memories">
+	      <select id="memCategory"><option value="">All categories</option></select>
+	      <select id="memSource"><option value="">All sources</option></select>
+	      <button id="refreshMemories" class="ghost" type="button">Refresh</button>
+	      <button id="summarizeCategory" class="ghost" type="button">Summarize</button>
+	      <button id="exportFiltered" class="ghost" type="button">Export</button>
+	    </div>
+	    <div id="memoryList" class="manager-list"></div>
+	  </section>
+
+	  <section id="statePanel" class="manager hidden" aria-label="Cognitive state">
+	    <div class="manager-head">
+	      <h2>Cognitive State</h2>
+	      <button id="closeState" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="state-grid">
+	      <section class="state-col">
+	        <h3>Goals</h3>
+	        <form id="goalForm" class="state-form">
+	          <textarea id="goalText" rows="3" placeholder="Goal"></textarea>
+	          <input id="goalNext" placeholder="Next action">
+	          <div class="row">
+	            <select id="goalStatus">
+	              <option value="active">Active</option>
+	              <option value="blocked">Blocked</option>
+	              <option value="done">Done</option>
+	              <option value="dropped">Dropped</option>
+	            </select>
+	            <input id="goalPriority" type="number" min="1" max="5" value="4" title="priority 1-5">
+	          </div>
+	          <input id="goalEvidence" placeholder="Evidence">
+	          <button type="submit">Save Goal</button>
+	        </form>
+	        <div id="goalList" class="state-list"></div>
+	      </section>
+	      <section class="state-col">
+	        <h3>World</h3>
+	        <form id="worldForm" class="state-form">
+	          <input id="worldKey" placeholder="Key">
+	          <textarea id="worldValue" rows="3" placeholder="Value"></textarea>
+	          <div class="row">
+	            <select id="worldStatus">
+	              <option value="current">Current</option>
+	              <option value="stale">Stale</option>
+	              <option value="archived">Archived</option>
+	            </select>
+	            <input id="worldConfidence" type="number" min="0" max="1" step="0.05" value="0.75" title="confidence">
+	          </div>
+	          <input id="worldSource" placeholder="Source">
+	          <button type="submit">Save Fact</button>
+	        </form>
+	        <div id="worldList" class="state-list"></div>
+	      </section>
+	      <section class="state-col">
+	        <h3>Beliefs</h3>
+	        <form id="beliefForm" class="state-form">
+	          <textarea id="beliefClaim" rows="3" placeholder="Belief"></textarea>
+	          <div class="row">
+	            <select id="beliefStatus">
+	              <option value="active">Active</option>
+	              <option value="stale">Stale</option>
+	              <option value="rejected">Rejected</option>
+	            </select>
+	            <input id="beliefConfidence" type="number" min="0" max="1" step="0.05" value="0.65" title="confidence">
+	          </div>
+	          <input id="beliefSource" placeholder="Source">
+	          <button type="submit">Save Belief</button>
+	        </form>
+	        <div id="beliefList" class="state-list"></div>
+	      </section>
+	    </div>
+	  </section>
+
+	  <section id="actionsPanel" class="manager hidden" aria-label="Pending actions">
+	    <div class="manager-head">
+	      <h2>Pending Actions</h2>
+	      <button id="closeActions" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="manager-tools">
+	      <button id="refreshActions" class="ghost" type="button">Refresh</button>
+	      <span class="empty">Risky tool calls wait here until approved.</span>
+	    </div>
+	    <div id="actionsList" class="manager-list"></div>
+	  </section>
+
+	  <section id="systemsPanel" class="manager hidden" aria-label="System layers">
+	    <div class="manager-head">
+	      <h2>Systems</h2>
+	      <button id="closeSystems" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="manager-tools safety-tools">
+	      <button id="refreshSystems" class="ghost" type="button">Refresh</button>
+	      <span class="empty">Integrity, homeostasis, evolution, awareness, and self-model controls.</span>
+	    </div>
+	    <div class="safety-grid">
+	      <section class="state-col">
+	        <h3>Integrity</h3>
+	        <div id="integrityList" class="state-list"></div>
+	        <h3>Homeostasis</h3>
+	        <div id="homeostasisList" class="state-list"></div>
+	      </section>
+	      <section class="state-col">
+	        <h3>Evolution</h3>
+	        <div id="evolutionList" class="state-list"></div>
+	        <h3>Continuity</h3>
+	        <div id="continuityList" class="state-list"></div>
+	      </section>
+	    </div>
+	  </section>
+
+	  <section id="observabilityPanel" class="manager hidden" aria-label="Observability">
+	    <div class="manager-head">
+	      <h2>Observability</h2>
+	      <button id="closeObservability" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="manager-tools safety-tools">
+	      <button id="refreshObservability" class="ghost" type="button">Refresh</button>
+	      <span class="empty">Last turn, tools, web search, and cognitive trace events.</span>
+	    </div>
+	    <div class="safety-grid">
+	      <section class="state-col">
+	        <h3>Last Turn</h3>
+	        <div id="observabilityLive" class="state-list"></div>
+	      </section>
+	      <section class="state-col">
+	        <h3>Recent Traces</h3>
+	        <div id="observabilityTraceList" class="state-list"></div>
+	      </section>
+	    </div>
+	  </section>
+
+	  <section id="safetyPanel" class="manager hidden" aria-label="Safety settings">
+	    <div class="manager-head">
+	      <h2>Safety</h2>
+	      <button id="closeSafety" class="ghost" type="button">Close</button>
+	    </div>
+	    <div class="manager-tools safety-tools">
+	      <button id="refreshSafety" class="ghost" type="button">Refresh</button>
+	      <span class="empty">Tool permissions, audit history, and undo live here.</span>
+	    </div>
+	    <div class="safety-grid">
+	      <section class="state-col">
+	        <h3>Permissions</h3>
+	        <div id="permissionList" class="state-list"></div>
+	      </section>
+	      <section class="state-col">
+	        <h3>Audit</h3>
+	        <div id="auditList" class="state-list"></div>
+	      </section>
+	    </div>
+	  </section>
+
+	  <section id="detailPanel" class="detail-panel hidden" aria-label="Memory detail">
+	    <div class="detail-head">
+	      <h2 id="detailTitle">Detail</h2>
+	      <button id="closeDetail" class="ghost" type="button">Close</button>
+	    </div>
+	    <div id="detailBody" class="detail-body"></div>
+	  </section>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

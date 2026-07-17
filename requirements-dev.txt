@@ -1,0 +1,8 @@
+# Dev/test dependencies (not needed to run the app).
+# Install:  ./.venv/bin/python -m pip install -r requirements-dev.txt
+# Run:      ./.venv/bin/python -m pytest
+# Browser E2E setup:
+#   ./.venv/bin/python -m playwright install chromium
+#   NEURAL_MAP_RUN_E2E=1 ./.venv/bin/python -m pytest -m e2e
+pytest>=8,<9
+pytest-playwright>=0.5,<1

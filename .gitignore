@@ -1,0 +1,23 @@
+.venv/
+memory_store/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+tmp/
+output/
+
+# Personal data & calibration — local only, never committed.
+# See examples/ for templates to create your own.
+aboutme.md
+finance.md
+portfolio_scenarios.md
+prioreval.md
+nursing.md
+source-of-truth.md
+will_perspective_journal.md
+LLM Brain/vault_location.md
+.claude/launch.json
+
+owner_names.txt
+agency_protocol.md
