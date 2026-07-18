@@ -182,6 +182,13 @@ def test_context_usage_persists_per_model_and_clear_resets_it():
     assert "clearContextUsage();" in clear_body
 
 
+def test_assistant_replies_use_a_readable_measure_and_line_height():
+    html = INDEX.read_text()
+
+    assert ".msg.assistant .bubble { max-width: min(84%, 78ch); }" in html
+    assert ".msg.assistant .bubble-content { font-size: 16px; line-height: 1.72; }" in html
+
+
 def test_clear_is_local_and_purge_starts_memory_disconnected_chat():
     js = APP_JS.read_text()
     command_body = js.split("async function handleLocalCommand(text)", 1)[1].split("async function send", 1)[0]
