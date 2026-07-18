@@ -22,6 +22,8 @@ def _tool_model(args: dict | None = None) -> str | None:
     model = (args or {}).get("__model")
     if model is None:
         model = (args or {}).get("model")
+    if model is None:
+        return None
     return str(model).strip() or None
 
 

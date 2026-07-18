@@ -1090,3 +1090,57 @@ Architectural drift check:
   the server LaunchAgent successfully.
 - Focused verification passed.
 - Full verification passed with 1 skipped test.
+
+## 2026-07-17 - Whole-Code Audit Privacy and Consistency Fixes
+
+Phase: Post-audit hardening
+Scope: Local data permissions, trusted prompt updates, media ingestion, and memory-tool model routing.
+Intent: Fix all four findings from the root-to-runtime code audit.
+
+Files changed:
+- `config.py`
+- `brain/utils.py`
+- `brain/portable.py`
+- `brain/toolkit/source_truth.py`
+- `brain/toolkit/perspective_update.py`
+- `brain/toolkit/memory_tools.py`
+- `brain/toolkit/governance.py`
+- `brain/documents.py`
+- `tests/test_audit_round_two.py`
+- `tests/test_image_ingest.py`
+
+Behavior changed:
+- The primary data directory is created and re-hardened to owner-only `0700`
+  before Chroma opens it; filesystem-root configurations are refused.
+- Automatic portable safety backups use a `0700` directory and explicit `0600`
+  file creation instead of inheriting a permissive process umask.
+- Source-of-Truth and Will-perspective edits hold one per-target thread/process
+  lock across their complete read, validation, and atomic replacement, so two
+  successful approvals cannot silently discard one another.
+- CLI image/audio ingestion now keeps prior text chunks until the sensory write
+  succeeds and removes only newly committed chunks when that write fails.
+- An omitted memory-tool model remains Python `None` instead of becoming the
+  literal model name `"None"` under selected-model embedding mode.
+- Existing `memory_store` directories were repaired to `0700` and its 69 current
+  files to `0600`; no stored data was deleted or rewritten.
+
+Verification:
+- Focused permission, concurrency, ingestion, perspective, source-of-truth,
+  operability, and action-tool suites passed.
+- Command: `./.venv/bin/python -m pytest`
+- Result: `730 passed, 1 skipped`, with the existing TestClient deprecation warning.
+- Command: `./.venv/bin/python -m compileall -q config.py brain`
+- Result: passed.
+- Command: `git diff --check`
+- Result: passed.
+
+Architectural drift check:
+- Status: `none`
+- Notes: Permission enforcement occurs at the existing config/store boundary;
+  path locking is a shared utility; ingestion uses the web endpoint's established
+  transaction ordering; model routing remains in the existing helpers.
+
+Open follow-ups:
+- Run the opt-in browser E2E suite when its environment is enabled.
+- Replace the deprecated Starlette TestClient/httpx compatibility path when the
+  dependency stack makes the migration available.

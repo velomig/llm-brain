@@ -7,6 +7,7 @@ import threading
 import uuid
 
 import config
+from brain.utils import path_lock
 
 
 def _source_path():
@@ -43,31 +44,32 @@ def update_source_of_truth(args: dict) -> dict:
         return {"error": "new_text too long"}
 
     path = _source_path()
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {"path": str(path), "error": "source of truth file not found"}
-    except OSError as exc:
-        return {"path": str(path), "error": str(exc)}
-
-    plan = plan_replacement(text, old_text, new_text)
-    matches = plan["matches"]
-    if matches <= 0:
-        return {"path": str(path), "error": "old_text not found"}
-    if matches > 1:
-        return {"path": str(path), "error": "old_text is ambiguous; it appears more than once"}
-
-    updated = plan["updated"]
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(updated, encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
+    with path_lock(path, config.DB_DIR, prefix="trusted_prompt"):
         try:
-            tmp.unlink()
-        except OSError:
-            pass
-        return {"path": str(path), "error": str(exc)}
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"path": str(path), "error": "source of truth file not found"}
+        except OSError as exc:
+            return {"path": str(path), "error": str(exc)}
+
+        plan = plan_replacement(text, old_text, new_text)
+        matches = plan["matches"]
+        if matches <= 0:
+            return {"path": str(path), "error": "old_text not found"}
+        if matches > 1:
+            return {"path": str(path), "error": "old_text is ambiguous; it appears more than once"}
+
+        updated = plan["updated"]
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(updated, encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return {"path": str(path), "error": str(exc)}
 
     return {
         "ok": True,

@@ -17,6 +17,7 @@ a human-readable archive of the same data.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -82,8 +83,17 @@ def save_backup(reason: str, model: str | None = None) -> Path:
     data = export_data(model=model)
     stamp = now_iso().replace(":", "").replace("+", "Z")
     path = BACKUP_DIR / f"{stamp}_{_safe_reason(reason)}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2))
+    finally:
+        if fd >= 0:
+            os.close(fd)
     return path
 
 
