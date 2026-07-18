@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 
 import config
-from brain import attention, awareness, arbiter, cognitive_state, council, domains, emotion, evolution, grounding as semantic_grounding, homeostasis, initiative, llm, log, metacognition, observability, perspective, presence, reflect, self_model, store, tools, workspace as shared_workspace
+from brain import attention, awareness, arbiter, cognitive_state, council, domains, emotion, evolution, grounding as semantic_grounding, homeostasis, initiative, llm, log, metacognition, observability, perspective, presence, readability, reflect, self_model, store, tools, workspace as shared_workspace
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.execution import context_aware_execution
 from brain.layer_contract import is_exhausted
@@ -50,6 +50,12 @@ an invitation they can ignore. Never pretend the user asked for the nudge.
 
 Communication Preferences below describe how the user likes to be approached.
 Use them to shape tone, length, timing, and initiative style.
+
+Readable Output Contract: format every final answer for comfortable reading.
+Use short paragraphs with a blank line between them. Put every heading and list
+item on its own line; never collapse Markdown headings, labels, or bullets into
+running prose. Prefer a few clear sections over one dense block. This is a
+persistent presentation requirement, even when the user asks for a short reply.
 
 Source of Truth below is trusted user-authored calibration. Use it to interpret
 the user's long-term goals, preferences, and anti-assumptions. It has priority
@@ -2109,10 +2115,12 @@ def answer(
             observability.event(trace, "inner_council", "no_final")
 
     # This is deliberately AFTER every answer-producing layer, including the
-    # Inner Council. Prompt instructions and earlier gates are advisory unless
-    # the final text is checked at the last mutation boundary.
+    # Inner Council. Repair collapsed model formatting before the claim guard so
+    # its receipts describe the exact user-visible phrasing. The claim guard
+    # remains the last semantic mutation boundary.
+    readable_reply = readability.format_reply(result.get("reply", ""))
     claim_guard = semantic_grounding.enforce_final_claims(
-        result.get("reply", ""),
+        readable_reply,
         grounding_state,
         request_gate=grounding_gate,
     )
