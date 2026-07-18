@@ -184,9 +184,13 @@ def test_context_usage_persists_per_model_and_clear_resets_it():
 
 def test_assistant_replies_use_a_readable_measure_and_line_height():
     html = INDEX.read_text()
+    js = APP_JS.read_text()
 
-    assert ".msg.assistant .bubble { max-width: min(84%, 78ch); }" in html
+    assert ".msg.assistant .bubble { width: fit-content; max-width: min(82%, 72ch); }" in html
     assert ".msg.assistant .bubble-content { font-size: 16px; line-height: 1.72; }" in html
+    assert "function formatAssistantDisplayText(text)" in js
+    assert "bubble.dataset.role = role;" in js
+    assert "formatAssistantDisplayText(value)" in js
 
 
 def test_clear_is_local_and_purge_starts_memory_disconnected_chat():

@@ -97,7 +97,7 @@
 	    background: var(--panel); border: 1px solid var(--border);
 	  }
 	  .bubble-content { white-space: pre-wrap; overflow-wrap: anywhere; }
-	  .msg.assistant .bubble { max-width: min(84%, 78ch); }
+	  .msg.assistant .bubble { width: fit-content; max-width: min(82%, 72ch); }
 	  .msg.assistant .bubble-content { font-size: 16px; line-height: 1.72; }
 	  .copy-bubble {
 	    position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
@@ -208,6 +208,7 @@
 	    .safety-grid { grid-template-columns: 1fr; }
 	    .awareness { grid-template-columns: 1fr; }
 	    .aware-next { max-width: none; text-align: left; }
+	    .msg.assistant .bubble { max-width: 94%; }
 	  }
 	  ::-webkit-scrollbar { width: 9px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
