@@ -466,9 +466,20 @@ final = RRF(semantic, BM25, graph, sensory, importance) + W_RECENCY·time_decay/
 ## Tuning
 
 Edit `config.py` (or set env vars `NEURAL_MAP_CHAT_MODEL`,
-`NEURAL_MAP_EMBED_MODEL`, `NEURAL_MAP_DB`, `OLLAMA_HOST`):
+`NEURAL_MAP_AUXILIARY_MODEL`, `NEURAL_MAP_EMBED_MODEL`, `NEURAL_MAP_DB`,
+`OLLAMA_HOST`):
 
 - `CHAT_MODEL` — swap for any model in `ollama list`.
+- `NEURAL_MAP_AUXILIARY_MODEL` — defaults to `gemma4:e4b` and handles Inner
+  Council, consolidation, and metacognitive-supervisor inference while the
+  selected main model continues writing ordinary chat responses. Override one
+  role with `NEURAL_MAP_COUNCIL_MODEL`, `NEURAL_MAP_CONSOLIDATION_MODEL`, or
+  `NEURAL_MAP_METACOGNITION_MODEL`; set any role to `__selected__` to use the
+  main chat model for that layer. `NEURAL_MAP_AUXILIARY_NUM_CTX` defaults to
+  `32768`, avoiding a main-model-sized KV cache for these compact jobs. These
+  bounded auxiliary calls disable model thinking so their token budget goes to
+  the requested JSON, critique, or council statement; main-chat thinking is
+  unchanged. Diagnostics reports each resolved role model and availability.
 - `NEURAL_MAP_EMBED_MODEL` — defaults to the dedicated `nomic-embed-text:latest`
   so all chat models share one searchable collection (most chat models can't
   produce embeddings at all). Set it to `__selected__` to shard collections by

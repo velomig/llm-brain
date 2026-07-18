@@ -813,6 +813,55 @@ def test_web_search_basis_walks_past_pronoun_only_clarification():
     assert basis == "Research treatment options for ADHD in adults\nsearch the web for that"
 
 
+def test_web_search_basis_understands_current_sources_followup():
+    history = [
+        {"role": "user", "content": "Explain the evidence for simulation theory"},
+        {"role": "assistant", "content": "Here is the non-live evidence I know."},
+    ]
+    followup = "Can you search the web and get more current sources?"
+
+    basis = pipeline._web_search_basis(followup, history)
+
+    assert basis == f"Explain the evidence for simulation theory\n{followup}"
+    assert pipeline._needs_web_prefetch(followup, history) is True
+
+
+def test_web_search_current_sources_followup_recovers_from_model_expansion(monkeypatch):
+    captured = {}
+
+    def fake_chat_with_tools(system, user, specs, dispatch, **kwargs):
+        captured["result"] = dispatch(
+            "web_search",
+            {"query": "simulation theory quantum gravity peer reviewed sources"},
+        )
+        return "grounded answer", [{"tool": "web_search", "args": {}, "result": captured["result"]}]
+
+    monkeypatch.setattr(config, "INTUITION_ENABLED", False)
+    monkeypatch.setattr(pipeline, "web_context_for", lambda query: None)
+    monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
+    monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+    monkeypatch.setattr(
+        pipeline.tools,
+        "dispatch",
+        lambda name, args: {"query": args["query"], "results": [{"title": "ok"}], "errors": []},
+    )
+
+    pipeline.answer(
+        "Can you search the web and get more current sources?",
+        [],
+        history=[
+            {"role": "user", "content": "Explain the evidence for simulation theory"},
+            {"role": "assistant", "content": "Here is the non-live evidence I know."},
+        ],
+    )
+
+    # "quantum gravity" and "peer reviewed" came from the model, not the
+    # user. They remain blocked; the dispatcher safely retries the literal
+    # prior user-authored topic instead of returning an error loop.
+    assert captured["result"]["query"] == "Explain the evidence for simulation theory"
+    assert "error" not in captured["result"]
+
+
 def test_web_search_tool_rejects_terms_from_uploaded_document(monkeypatch):
     # A codename that lives only in a sourced upload is exactly as private as an
     # unsourced note: user topic + upload codename must not reach the provider.

@@ -129,6 +129,7 @@ def supervise(
         },
         "prior_wisdom": _recent_wisdom(model=model),
     }
+    inference_model = config.metacognition_model(model)
     token = _REFLECTION_DEPTH.set(current_depth + 1)
     try:
         try:
@@ -136,10 +137,12 @@ def supervise(
                 _SYSTEM,
                 "Audit this completed turn and decide whether to store a metacognitive note:\n"
                 + json.dumps(payload, ensure_ascii=True),
-                model=model,
+                model=inference_model,
+                num_ctx=config.auxiliary_num_ctx(),
+                think=False,
             )
         except Exception as exc:
-            log.fallback("metacognition_failed", exc, model=model, phase="supervisor")
+            log.fallback("metacognition_failed", exc, model=inference_model, phase="supervisor")
             return result("failed", "supervisor_failed", stored=0, id=None)
 
         data = _safe_json(raw)
@@ -159,6 +162,6 @@ def supervise(
         except Exception as exc:
             log.fallback("metacognition_failed", exc, model=model, phase="store")
             return result("failed", "store_failed", stored=0, id=None)
-        return result("ok", stored=1, id=mid, bias=bias)
+        return result("ok", stored=1, id=mid, bias=bias, model=inference_model)
     finally:
         _REFLECTION_DEPTH.reset(token)

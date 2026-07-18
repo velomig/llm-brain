@@ -61,7 +61,7 @@ _ACTION_RESULT_RE = re.compile(
 )
 _VERIFY_RE = re.compile(r"\b(verify|verified|evidence|prove|confirm|check)\b", re.I)
 _PHENOMENAL_ASSERT_RE = re.compile(
-    r"\bI\s+(?:really\s+)?(?:feel|experience|am\s+conscious|am\s+sentient|have\s+qualia|suffer)\b",
+    r"\bI\s+(?:really\s+)?(?:feel(?!\s+(?:like|that)\b)|experience|am\s+conscious|am\s+sentient|have\s+qualia|suffer)\b",
     re.I,
 )
 _SENSORY_ASSERT_RE = re.compile(r"\bI\s+(?:can\s+)?(?:see|saw|hear|heard|observed|looked at|listened to)\b", re.I)

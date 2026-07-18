@@ -130,6 +130,23 @@ def test_context_tracker_accumulates_turn_total_across_calls(monkeypatch):
     assert usage["calls"] == 2
 
 
+def test_context_tracker_ignores_auxiliary_model_calls(monkeypatch):
+    client = FakeOllamaClient(max_context=131072, prompt_eval_count=200)
+    monkeypatch.setattr(llm, "_client", client)
+    token = llm.begin_context_tracking(8192, "gemma4:26b")
+    try:
+        llm.chat("system", "foreground", model="gemma4:26b", num_ctx=8192)
+        llm.chat("system", "council", model="gemma4:e4b", num_ctx=4096)
+        usage = llm.context_usage()
+    finally:
+        llm.reset_context_tracking(token)
+
+    assert usage["model"] == "gemma4:26b"
+    assert usage["configured_tokens"] == 8192
+    assert usage["turn_total_tokens"] == 200
+    assert usage["calls"] == 1
+
+
 def test_context_tracker_falls_back_to_labeled_estimate(monkeypatch):
     client = FakeOllamaClient(max_context=8192)
     monkeypatch.setattr(llm, "_client", client)
@@ -225,4 +242,9 @@ def test_long_context_stress_preserves_known_large_window_for_system2(monkeypatc
     evolution.propose({"preamble": "p", "tools_note": "t", "inject_note": "i"}, model="stress-model")
 
     assert client.calls
-    assert all(call["options"]["num_ctx"] == long_ctx for call in client.calls)
+    main_calls = [call for call in client.calls if call["model"] == "stress-model"]
+    auxiliary_calls = [call for call in client.calls if call["model"] == config.METACOGNITION_MODEL]
+    assert main_calls
+    assert all(call["options"]["num_ctx"] == long_ctx for call in main_calls)
+    assert len(auxiliary_calls) == 1
+    assert auxiliary_calls[0]["options"]["num_ctx"] == config.AUXILIARY_NUM_CTX

@@ -57,6 +57,25 @@ def test_each_relation_links_to_its_own_fact(consolidation_on, monkeypatch):
     assert "JEPQ" in text_by_id[jepq_ids[0]]   # the JEPQ edge resolves to the JEPQ fact
 
 
+def test_consolidation_routes_only_extraction_to_auxiliary_model(consolidation_on, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(config, "CONSOLIDATION_MODEL", "gemma4:e4b")
+    monkeypatch.setattr(consolidate, "_related_facts", lambda query, model, k: [])
+
+    def fake_chat(*args, **kwargs):
+        captured.update(kwargs)
+        return '{"facts": [], "superseded": [], "preferences": [], "conflicts": []}'
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+
+    result = consolidate.consolidate("u", "a", model="gemma4:26b")
+
+    assert captured["model"] == "gemma4:e4b"
+    assert captured["num_ctx"] == config.AUXILIARY_NUM_CTX
+    assert captured["think"] is False
+    assert result["model"] == "gemma4:e4b"
+
+
 def test_flat_relations_fallback_links_only_for_single_fact(consolidation_on, monkeypatch):
     # A model that ignores the nested schema and emits a single fact + top-level
     # relations should still get linked (unambiguous mapping).

@@ -112,10 +112,17 @@ def consolidate(user_text: str, reply_text: str, model: str | None = None) -> di
         ensure_ascii=True,
     )
 
+    inference_model = config.consolidation_model(model)
     try:
-        raw = llm.chat(_SYSTEM, f"Extract durable facts from this JSON:\n{payload}", model=model)
+        raw = llm.chat(
+            _SYSTEM,
+            f"Extract durable facts from this JSON:\n{payload}",
+            model=inference_model,
+            num_ctx=config.auxiliary_num_ctx(),
+            think=False,
+        )
     except Exception as exc:
-        log.fallback("consolidation_failed", exc, model=model, phase="extract")
+        log.fallback("consolidation_failed", exc, model=inference_model, phase="extract")
         return {"stored": 0, "superseded": 0}
 
     data = _safe_json(raw)
@@ -208,4 +215,11 @@ def consolidate(user_text: str, reply_text: str, model: str | None = None) -> di
                 _store_unit(unit, model)
                 conflict_count += 1
 
-    return {"stored": stored, "superseded": retired, "relations": linked, "preferences": prefs, "conflicts": conflict_count}
+    return {
+        "stored": stored,
+        "superseded": retired,
+        "relations": linked,
+        "preferences": prefs,
+        "conflicts": conflict_count,
+        "model": inference_model,
+    }

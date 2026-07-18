@@ -53,6 +53,24 @@ def test_supervisor_skips_null_note(monkeypatch):
     assert store.count_all() == 0
 
 
+def test_supervisor_routes_inference_but_keeps_selected_memory_store(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(config, "METACOGNITION_ENABLED", True)
+    monkeypatch.setattr(config, "METACOGNITION_MODEL", "gemma4:e4b")
+
+    def fake_chat(*args, **kwargs):
+        captured.update(kwargs)
+        return '{"note": null}'
+
+    monkeypatch.setattr(metacognition.llm, "chat", fake_chat)
+
+    metacognition.supervise("hello", "hi", model="gemma4:26b")
+
+    assert captured["model"] == "gemma4:e4b"
+    assert captured["num_ctx"] == config.AUXILIARY_NUM_CTX
+    assert captured["think"] is False
+
+
 def test_supervisor_stops_nested_reflection_at_max_depth(monkeypatch):
     nested = {}
     monkeypatch.setattr(config, "METACOGNITION_ENABLED", True)
