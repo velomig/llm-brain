@@ -1145,6 +1145,19 @@ def health(model: str | None = Query(default=None, max_length=config.MAX_MODEL_N
 
     chat_available = (chat_model in available) if ollama_reachable else None
     embed_available = (embed_model in available) if ollama_reachable else None
+    role_model_names = {
+        "council": config.council_model(chat_model),
+        "consolidation": config.consolidation_model(chat_model),
+        "metacognition": config.metacognition_model(chat_model),
+        "vision": config.VISION_MODEL,
+    }
+    role_models = {
+        role: {
+            "name": name,
+            "available": (name in available) if ollama_reachable else None,
+        }
+        for role, name in role_model_names.items()
+    }
 
     vector_count = store.count(model, text_only=False)
     text_only_count = store.count(model, text_only=True)
@@ -1166,6 +1179,7 @@ def health(model: str | None = Query(default=None, max_length=config.MAX_MODEL_N
         "ollama": {"reachable": ollama_reachable, "error": ollama_error},
         "chat_model": {"name": chat_model, "available": chat_available},
         "embed_model": {"name": embed_model, "available": embed_available},
+        "role_models": role_models,
         "memories": {
             "vector": vector_count,
             "text_only": text_only_count,

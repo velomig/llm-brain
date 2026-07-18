@@ -922,6 +922,13 @@ async function showDiagnostics() {
     lines.push('', `Ollama: ${health.ollama.reachable ? 'reachable' : 'unreachable'}`);
     lines.push(`Chat model: ${health.chat_model.name} (${health.chat_model.available === null ? 'unknown' : health.chat_model.available ? 'available' : 'missing'})`);
     lines.push(`Embed model: ${health.embed_model.name} (${health.embed_model.available === null ? 'unknown' : health.embed_model.available ? 'available' : 'missing'})`);
+    if (health.role_models) {
+      const routed = Object.entries(health.role_models).map(([role, info]) => {
+        const status = info.available === null ? 'unknown' : info.available ? 'available' : 'missing';
+        return `${role}=${info.name} (${status})`;
+      });
+      lines.push(`Role models: ${routed.join(', ')}`);
+    }
     lines.push(`Memories: ${health.memories.total} total, ${health.memories.vector} vector, ${health.memories.text_only} text-only, ${health.memories.pinned} pinned`);
     if (health.cognitive_state && health.cognitive_state.enabled) {
       const cs = health.cognitive_state;

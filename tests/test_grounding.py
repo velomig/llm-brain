@@ -313,6 +313,18 @@ def test_final_claim_guard_filters_phenomenal_self_assertion():
     assert "cannot establish or claim subjective experience" in guarded["reply"]
 
 
+def test_final_claim_guard_preserves_conversational_feel_hedges():
+    state = grounding.analyze_turn("Recommend an implementation approach")
+    reply = "I feel like the best approach is to test the smaller model first."
+
+    guarded = grounding.enforce_final_claims(reply, state)
+
+    assert grounding._claim_class(reply)[0] == "conceptual"
+    assert guarded["reply"] == reply
+    assert guarded["modified"] is False
+    assert grounding._claim_class("I feel pain.")[0] == "phenomenal_assertion"
+
+
 def test_final_claim_guard_preserves_conceptual_analysis():
     state = grounding.analyze_turn("Explain recursive systems")
     reply = "Recursive systems feed prior outputs into later processing."

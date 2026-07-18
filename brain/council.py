@@ -128,6 +128,8 @@ def deliberate(
     if not should_convene(user_text):
         return None
 
+    inference_model = config.council_model(model)
+    inference_num_ctx = config.auxiliary_num_ctx(num_ctx)
     turns = max(1, min(5, evolution.hyperparam("INNER_COUNCIL_TURNS", config.INNER_COUNCIL_TURNS)))
     context = {
         "user_request": user_text,
@@ -151,7 +153,14 @@ def deliberate(
                         ensure_ascii=True,
                     )
                 )
-                statement = llm.chat(system, prompt, history=history, model=model, num_ctx=num_ctx)
+                statement = llm.chat(
+                    system,
+                    prompt,
+                    history=history,
+                    model=inference_model,
+                    num_ctx=inference_num_ctx,
+                    think=False,
+                )
                 transcript.append(
                     {
                         "round": round_no,
@@ -172,14 +181,22 @@ def deliberate(
                 ensure_ascii=True,
             )
         )
-        final = llm.chat(_MODERATOR, moderator_prompt, history=history, model=model, num_ctx=num_ctx)
+        final = llm.chat(
+            _MODERATOR,
+            moderator_prompt,
+            history=history,
+            model=inference_model,
+            num_ctx=inference_num_ctx,
+            think=False,
+        )
     except Exception as exc:
-        log.fallback("inner_council_failed", exc, model=model, phase="deliberate")
+        log.fallback("inner_council_failed", exc, model=inference_model, phase="deliberate")
         return None
 
     return {
         "used": True,
         "turns": turns,
+        "model": inference_model,
         "personas": list(_PERSONAS),
         "transcript": transcript,
         "final": final,

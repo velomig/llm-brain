@@ -440,6 +440,16 @@ _GENERIC_WEB_FOLLOWUP = re.compile(
     r"(?:more\s+)?(?:information|info|details|it|that|this|the\s+topic)?[.!?]*\s*$",
     re.IGNORECASE,
 )
+_REFERENTIAL_WEB_FOLLOWUP = re.compile(
+    r"^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+    r"(?:(?:search|browse|look\s*up|research)(?:\s+(?:the\s+)?web|\s+online)?"
+    r"(?:\s+and\s+(?:get|find|use|provide))?|(?:get|find|use|provide))"
+    r"(?:\s+(?:me|us))?(?:\s+for)?\s+"
+    r"(?:(?:some|more|new|newer|current|recent|updated|fresh)\s+)*"
+    r"(?:sources?|information|info|details|results?|evidence)"
+    r"(?:\s+(?:for|on|about)\s+(?:it|that|this|the\s+topic))?[.!?]*\s*$",
+    re.IGNORECASE,
+)
 _SENSITIVE_SEARCH_TERMS = {
     "address",
     "account",
@@ -680,6 +690,7 @@ def _web_search_basis(user_text: str, history: list[dict] | None = None) -> str:
         _RETRY_FOLLOWUP.search(user_text or "")
         or _CONTEXTUAL_WEB_FOLLOWUP.search(user_text or "")
         or _GENERIC_WEB_FOLLOWUP.search(user_text or "")
+        or _REFERENTIAL_WEB_FOLLOWUP.search(user_text or "")
     ):
         return user_text
     # A generic continuation can follow one or more pronoun-only clarifications
@@ -708,6 +719,30 @@ def _web_search_basis(user_text: str, history: list[dict] | None = None) -> str:
     if nearest_prior:
         return f"{nearest_prior}\n{user_text}"
     return user_text
+
+
+def _historical_user_web_query(search_basis: str, current_user_text: str) -> str | None:
+    """Return a provider-safe fallback taken only from a prior user request.
+
+    Small models sometimes expand a referential request ("get more current
+    sources") with words from the assistant's last answer. The provenance
+    guard must reject that expansion, but it need not strand the turn: when
+    ``_web_search_basis`` resolved an earlier user-authored topic, retry that
+    literal topic instead.
+    """
+    current_norm = " ".join((current_user_text or "").split())
+    if " ".join((search_basis or "").split()) == current_norm:
+        return None
+    for line in (search_basis or "").splitlines():
+        candidate = " ".join(line.split())
+        if not candidate or candidate == current_norm:
+            continue
+        if not (_query_terms(candidate) - _SEARCH_FILLER_TERMS):
+            continue
+        if len(candidate) > config.MAX_WEB_SEARCH_TOOL_QUERY_CHARS:
+            candidate = candidate[: config.MAX_WEB_SEARCH_TOOL_QUERY_CHARS].rsplit(" ", 1)[0].strip()
+        return candidate or None
+    return None
 
 
 # Verbs and qualifiers that commonly accompany a bare symbol lookup ("check
@@ -1122,6 +1157,8 @@ def _needs_web_prefetch(text: str, history: list[dict] | None = None) -> bool:
     if _CONTEXTUAL_WEB_FOLLOWUP.search(text or "") and history:
         return True
     if _GENERIC_WEB_FOLLOWUP.search(text or "") and history:
+        return True
+    if _REFERENTIAL_WEB_FOLLOWUP.search(text or "") and history:
         return True
     return False
 
@@ -1548,15 +1585,18 @@ def _single_pass_answer(
                     # information"), the literal identifier lives in the
                     # resolved historical basis rather than the current filler
                     # message. The basis contains only user-authored text.
-                    literal_query = _literal_user_identifier_query(web_search_basis)
-                    if literal_query and _web_search_refusal(
-                        literal_query,
+                    fallback_query = (
+                        _literal_user_identifier_query(web_search_basis)
+                        or _historical_user_web_query(web_search_basis, user_text)
+                    )
+                    if fallback_query and _web_search_refusal(
+                        fallback_query,
                         web_search_basis,
                         web_searches_used,
                         tool_results_seen,
                         private_search_terms,
                     ) is None:
-                        query = literal_query
+                        query = fallback_query
                         refusal = None
                 if refusal:
                     result = {"error": refusal}

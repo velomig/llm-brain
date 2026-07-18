@@ -108,11 +108,17 @@ def _record_context_usage(
     messages: list[dict],
     options: dict,
     *,
+    model: str | None = None,
     tools: list[dict] | None = None,
     exact_tokens=None,
 ) -> None:
     current = _CONTEXT_USAGE.get()
     if current is None:
+        return
+    # The UI meter describes the selected foreground model. Auxiliary council,
+    # consolidation, and metacognition calls have their own smaller context
+    # window and must not overwrite that meter or inflate its call count.
+    if model and model != current.get("model"):
         return
     try:
         exact = int(exact_tokens)
@@ -236,8 +242,14 @@ def _guard_output(
     return _truncate_output(raw), True
 
 
-def _streamed_message(name: str, messages: list[dict], options: dict,
-                      event: threading.Event, tools: list[dict] | None = None) -> tuple[str, list]:
+def _streamed_message(
+    name: str,
+    messages: list[dict],
+    options: dict,
+    event: threading.Event,
+    tools: list[dict] | None = None,
+    think: bool | str | None = None,
+) -> tuple[str, list]:
     """One generation as a stream, aborted between chunks if `event` is set.
 
     Returns (content, tool_calls). Ollama emits each tool call whole within a
@@ -247,6 +259,8 @@ def _streamed_message(name: str, messages: list[dict], options: dict,
     kwargs: dict = {"model": name, "messages": messages, "options": options, "stream": True}
     if tools is not None:
         kwargs["tools"] = tools
+    if think is not None:
+        kwargs["think"] = think
     stream = _client.chat(**kwargs)
     parts: list[str] = []
     tool_calls: list = []
@@ -277,7 +291,7 @@ def _streamed_message(name: str, messages: list[dict], options: dict,
             except Exception:
                 pass
     _record_context_usage(
-        messages, options, tools=tools, exact_tokens=prompt_eval_count
+        messages, options, model=name, tools=tools, exact_tokens=prompt_eval_count
     )
     content, guarded = _guard_output(
         "".join(parts), name, forced_reason=guard_reason
@@ -285,8 +299,13 @@ def _streamed_message(name: str, messages: list[dict], options: dict,
     return content, ([] if guarded else tool_calls)
 
 
-def _chat_message(name: str, messages: list[dict], options: dict,
-                  tools: list[dict] | None = None) -> tuple[str, list]:
+def _chat_message(
+    name: str,
+    messages: list[dict],
+    options: dict,
+    tools: list[dict] | None = None,
+    think: bool | str | None = None,
+) -> tuple[str, list]:
     """One generation, cancellable when a cancel event is active.
 
     No event (CLI, cron jobs, background capture) → plain non-streaming call,
@@ -296,15 +315,18 @@ def _chat_message(name: str, messages: list[dict], options: dict,
     if event is not None:
         if event.is_set():
             raise GenerationCancelled()
-        return _streamed_message(name, messages, options, event, tools=tools)
+        return _streamed_message(name, messages, options, event, tools=tools, think=think)
     kwargs: dict = {"model": name, "messages": messages, "options": options}
     if tools is not None:
         kwargs["tools"] = tools
+    if think is not None:
+        kwargs["think"] = think
     resp = _client.chat(**kwargs)
     msg = resp["message"]
     _record_context_usage(
         messages,
         options,
+        model=name,
         tools=tools,
         exact_tokens=_msg_get(resp, "prompt_eval_count"),
     )
@@ -377,6 +399,7 @@ def chat(
     history: list[dict] | None = None,
     model: str | None = None,
     num_ctx: int | None = None,
+    think: bool | str | None = None,
 ) -> str:
     messages = [{"role": "system", "content": system}]
     if history:
@@ -384,7 +407,7 @@ def chat(
     messages.append({"role": "user", "content": user})
     name = model or config.CHAT_MODEL
     options = _chat_options(num_ctx, name)
-    content, _ = _chat_message(name, messages, options)
+    content, _ = _chat_message(name, messages, options, think=think)
     return sanitize_reply(content, name)
 
 

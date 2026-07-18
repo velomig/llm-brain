@@ -57,6 +57,32 @@ def test_council_defaults_to_one_round(monkeypatch):
     assert len(calls) == 5
 
 
+def test_council_routes_all_five_calls_to_auxiliary_model(monkeypatch):
+    monkeypatch.setattr(config, "INNER_COUNCIL_ENABLED", True)
+    monkeypatch.setattr(config, "INNER_COUNCIL_TURNS", 1)
+    monkeypatch.setattr(config, "COUNCIL_MODEL", "gemma4:e4b")
+    calls = []
+
+    def fake_chat(system, user, **kwargs):
+        calls.append(kwargs)
+        return "moderated final" if "Synthesize this inner-council debate" in user else "statement"
+
+    monkeypatch.setattr(council.llm, "chat", fake_chat)
+
+    out = council.deliberate(
+        "Should I make a major career decision?",
+        "draft answer",
+        model="gemma4:26b",
+        num_ctx=262144,
+    )
+
+    assert out["model"] == "gemma4:e4b"
+    assert len(calls) == 5
+    assert {call["model"] for call in calls} == {"gemma4:e4b"}
+    assert {call["num_ctx"] for call in calls} == {config.AUXILIARY_NUM_CTX}
+    assert {call["think"] for call in calls} == {False}
+
+
 def test_council_runs_four_personas_three_rounds_then_moderator(monkeypatch):
     monkeypatch.setattr(config, "INNER_COUNCIL_ENABLED", True)
     monkeypatch.setattr(config, "INNER_COUNCIL_TURNS", 3)

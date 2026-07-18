@@ -13,6 +13,14 @@ DB_DIR = Path(os.getenv("NEURAL_MAP_DB", BASE_DIR / "memory_store"))  # ChromaDB
 # --- Ollama (local, private) -------------------------------------------------
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 CHAT_MODEL = os.getenv("NEURAL_MAP_CHAT_MODEL", "gemma4:latest")        # writes responses
+# Lightweight local model for bounded background/review work. Role-specific
+# settings below can override it, or use ``__selected__`` to follow the main
+# chat model. Keeping this separate avoids spending 26B inference on compact
+# JSON extraction and critique tasks.
+AUXILIARY_MODEL = os.getenv("NEURAL_MAP_AUXILIARY_MODEL", "gemma4:e4b")
+COUNCIL_MODEL = os.getenv("NEURAL_MAP_COUNCIL_MODEL", AUXILIARY_MODEL)
+CONSOLIDATION_MODEL = os.getenv("NEURAL_MAP_CONSOLIDATION_MODEL", AUXILIARY_MODEL)
+METACOGNITION_MODEL = os.getenv("NEURAL_MAP_METACOGNITION_MODEL", AUXILIARY_MODEL)
 # Dedicated embedder. Most chat models (gemma4, Qwen, ...) can't produce
 # embeddings, so a purpose-built model keeps every memory in ONE searchable
 # collection regardless of which chat model is generating replies.
@@ -34,6 +42,40 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+AUXILIARY_NUM_CTX = _env_int("NEURAL_MAP_AUXILIARY_NUM_CTX", 32768)
+
+
+def routed_model(configured_model: str | None, selected_model: str | None = None) -> str:
+    """Resolve a role model without changing the selected model's memory store."""
+    configured = str(configured_model or "").strip()
+    if not configured or configured == "__selected__":
+        return selected_model or CHAT_MODEL
+    return configured
+
+
+def auxiliary_num_ctx(requested: int | None = None) -> int:
+    """Bound auxiliary calls so a small task does not allocate the main KV cache."""
+    cap = max(1, int(AUXILIARY_NUM_CTX))
+    if requested is None:
+        return cap
+    try:
+        return max(1, min(int(requested), cap))
+    except (TypeError, ValueError):
+        return cap
+
+
+def council_model(selected_model: str | None = None) -> str:
+    return routed_model(COUNCIL_MODEL, selected_model)
+
+
+def consolidation_model(selected_model: str | None = None) -> str:
+    return routed_model(CONSOLIDATION_MODEL, selected_model)
+
+
+def metacognition_model(selected_model: str | None = None) -> str:
+    return routed_model(METACOGNITION_MODEL, selected_model)
 
 
 def embedding_model(selected_model: str | None = None) -> str:

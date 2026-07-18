@@ -21,12 +21,24 @@ def test_health_reports_models_counts_and_features(monkeypatch):
     store_memory("a fallback memory", text_only=True)
     store_memory("another fallback", text_only=True)
 
-    out = _health(monkeypatch, [config.CHAT_MODEL, config.EMBED_MODEL])
+    available = [
+        config.CHAT_MODEL,
+        config.EMBED_MODEL,
+        config.COUNCIL_MODEL,
+        config.CONSOLIDATION_MODEL,
+        config.METACOGNITION_MODEL,
+        config.VISION_MODEL,
+    ]
+    out = _health(monkeypatch, available)
 
     assert out["ok"] is True
     assert out["ollama"] == {"reachable": True, "error": None}
     assert out["chat_model"] == {"name": config.CHAT_MODEL, "available": True}
     assert out["embed_model"] == {"name": config.EMBED_MODEL, "available": True}
+    assert out["role_models"]["council"] == {"name": config.COUNCIL_MODEL, "available": True}
+    assert out["role_models"]["consolidation"]["available"] is True
+    assert out["role_models"]["metacognition"]["available"] is True
+    assert out["role_models"]["vision"]["available"] is True
     assert out["memories"]["vector"] == 1
     assert out["memories"]["text_only"] == 2
     assert out["memories"]["total"] == 3
