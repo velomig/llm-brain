@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import re
+import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: dict[str, threading.Lock] = {}
 
 
 def clean_text(value, limit: int = 240) -> str:
@@ -47,6 +53,26 @@ def file_lock(lock_file: Path):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     finally:
         fh.close()
+
+
+@contextmanager
+def path_lock(target: Path, lock_dir: Path, prefix: str = "path"):
+    """Serialize a target-file transaction across threads and processes.
+
+    Atomic replacement prevents torn files but does not prevent lost updates:
+    two writers can read the same original, independently replace it, and both
+    report success while the later replacement discards the earlier change.
+    A per-target thread lock plus a hashed flock file protects the whole
+    read/validate/write transaction without placing lock artifacts beside the
+    user-authored target file.
+    """
+    key = str(Path(target).resolve(strict=False))
+    with _PATH_LOCKS_GUARD:
+        thread_lock = _PATH_LOCKS.setdefault(key, threading.Lock())
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
+    lock_file = Path(lock_dir) / f".neural_map_{prefix}_{digest}.lock"
+    with thread_lock, file_lock(lock_file):
+        yield
 
 
 def safe_json(raw: str) -> dict:

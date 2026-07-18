@@ -10,6 +10,31 @@ BASE_DIR = Path(__file__).resolve().parent
 # Any setting below can be overridden with an env var (handy for tests / swaps).
 DB_DIR = Path(os.getenv("NEURAL_MAP_DB", BASE_DIR / "memory_store"))  # ChromaDB on disk
 
+
+def ensure_private_directory(path: Path) -> Path:
+    """Create an application-private directory and enforce owner-only access.
+
+    The Neural Map store contains conversation text, cognitive state, pending
+    actions, and credentials.  Relying on the caller's umask commonly creates a
+    0755 directory, which makes every 0644 database/state file below it readable
+    by other local accounts.  Hardening the directory itself before Chroma opens
+    it protects both existing and future files, including files created by
+    third-party libraries whose individual modes we do not control.
+    """
+    target = Path(path).expanduser()
+    resolved = target.resolve(strict=False)
+    if resolved == Path(resolved.anchor):
+        raise ValueError("NEURAL_MAP_DB must not be a filesystem root")
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not target.is_dir():
+        raise NotADirectoryError(f"NEURAL_MAP_DB is not a directory: {target}")
+    target.chmod(0o700)
+    return target
+
+
+# This must run before brain.store constructs its module-level Chroma client.
+DB_DIR = ensure_private_directory(DB_DIR)
+
 # --- Ollama (local, private) -------------------------------------------------
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 CHAT_MODEL = os.getenv("NEURAL_MAP_CHAT_MODEL", "gemma4:latest")        # writes responses

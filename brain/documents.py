@@ -192,21 +192,57 @@ def ingest_file(
 ) -> tuple[int, str]:
     p = Path(path)
     text, filename = read_document(p, vision_model=vision_model)
+    source = str(p.resolve())
+    suffix = p.suffix.lower()
+    sensory_kind = "image" if suffix in IMAGE_SUFFIXES else "audio" if suffix in AUDIO_SUFFIXES else None
+    if sensory_kind is None:
+        return ingest_document_text(
+            text,
+            filename=filename,
+            source=source,
+            category=category,
+            importance=importance,
+            max_chars=max_chars,
+            replace=replace,
+            model=model,
+        )
+
+    # Text chunks and sensory vectors live in separate Chroma collections, so
+    # media replacement must be an explicit two-store transaction.  Keep the
+    # prior chunks until the sensory write succeeds; on failure, remove only
+    # this attempt's fresh UUIDs.  This mirrors the web-ingest endpoint's
+    # rollback-safe ordering and prevents a failed CLI re-ingest from pairing a
+    # new caption with the old sensory record.
+    old_ids = {
+        rec["id"]
+        for rec in store.list_records_all(model)
+        if (rec.get("meta") or {}).get("source") == source
+    }
     n, cat = ingest_document_text(
         text,
         filename=filename,
-        source=str(p.resolve()),
+        source=source,
         category=category,
         importance=importance,
         max_chars=max_chars,
-        replace=replace,
+        replace=False,
         model=model,
     )
-    suffix = p.suffix.lower()
-    if suffix in IMAGE_SUFFIXES:
-        sensory.add_media("image", p.read_bytes(), str(p.resolve()), filename, text, cat, importance)
-    elif suffix in AUDIO_SUFFIXES:
-        sensory.add_media("audio", p.read_bytes(), str(p.resolve()), filename, text, cat, importance)
+    try:
+        sensory.add_media(sensory_kind, p.read_bytes(), source, filename, text, cat, importance)
+    except Exception:
+        new_ids = [
+            rec["id"]
+            for rec in store.list_records_all(model)
+            if (rec.get("meta") or {}).get("source") == source and rec["id"] not in old_ids
+        ]
+        if new_ids:
+            store.delete_all(new_ids, model=model)
+            graph.delete_fact_ids(new_ids, collections=store.graph_collection_names(model))
+        raise
+    if replace and old_ids:
+        store.delete_all(sorted(old_ids), model=model)
+        graph.delete_fact_ids(sorted(old_ids), collections=store.graph_collection_names(model))
     return n, cat
 
 

@@ -149,6 +149,47 @@ def test_unavailable_vision_model_raises(tmp_path, monkeypatch):
         ingest_file(img)
 
 
+def test_cli_media_ingest_rolls_back_text_when_sensory_write_fails(tmp_path, fake_vision, monkeypatch):
+    img = tmp_path / "rollback.png"
+    img.write_bytes(PNG_1x1)
+    before = store.count_all()
+
+    monkeypatch.setattr(
+        sensory,
+        "add_media",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sensory write failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="sensory write failed"):
+        ingest_file(img)
+
+    assert store.count_all() == before
+    assert sensory.list_records() == []
+
+
+def test_cli_media_reingest_failure_preserves_old_caption(tmp_path, fake_vision, monkeypatch):
+    img = tmp_path / "doormat.png"
+    img.write_bytes(PNG_1x1)
+    ingest_file(img)
+    before_count = store.count_all()
+
+    monkeypatch.setattr(vision, "describe_image", lambda *args, **kwargs: "A completely new caption")
+    monkeypatch.setattr(
+        sensory,
+        "add_media",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sensory write failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="sensory write failed"):
+        ingest_file(img)
+
+    texts = [record["text"] for record in store.list_records_all()]
+    assert store.count_all() == before_count
+    assert any("WELCOME" in text for text in texts)
+    assert not any("completely new caption" in text for text in texts)
+    assert len(sensory.list_records()) == 1
+
+
 def test_failed_media_replacement_preserves_existing_record(monkeypatch):
     """A failed replacement must not destroy the record it was replacing: the
     old delete-first order left zero sensory records and an orphan vector when

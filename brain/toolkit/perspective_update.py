@@ -8,6 +8,7 @@ import uuid
 import config
 from brain import perspective
 from brain.toolkit.source_truth import plan_replacement
+from brain.utils import path_lock
 
 
 def update_will_perspective(args: dict) -> dict:
@@ -21,36 +22,37 @@ def update_will_perspective(args: dict) -> dict:
         return {"error": "perspective edit is larger than the configured identity-edit limit"}
 
     path = config.WILL_PERSPECTIVE_PATH.resolve(strict=False)
-    try:
-        current = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {"path": str(path), "error": "Will perspective file not found"}
-    except OSError as exc:
-        return {"path": str(path), "error": str(exc)}
-
-    plan = plan_replacement(current, old_text, new_text)
-    if plan["matches"] <= 0:
-        return {"path": str(path), "error": "old_text not found"}
-    if plan["matches"] > 1:
-        return {"path": str(path), "error": "old_text is ambiguous; it appears more than once"}
-
-    updated = plan["updated"]
-    if len(updated) > config.WILL_PERSPECTIVE_MAX_CHARS:
-        return {"path": str(path), "error": "updated perspective exceeds its configured prompt limit"}
-    old_hash = perspective.perspective_hash(current)
-    new_hash = perspective.perspective_hash(updated)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(updated, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError as exc:
+    with path_lock(path, config.DB_DIR, prefix="trusted_prompt"):
         try:
-            tmp.unlink()
-        except OSError:
-            pass
-        return {"path": str(path), "error": str(exc)}
+            current = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"path": str(path), "error": "Will perspective file not found"}
+        except OSError as exc:
+            return {"path": str(path), "error": str(exc)}
 
-    journal = perspective.append_identity_change(old_hash, new_hash, reason)
+        plan = plan_replacement(current, old_text, new_text)
+        if plan["matches"] <= 0:
+            return {"path": str(path), "error": "old_text not found"}
+        if plan["matches"] > 1:
+            return {"path": str(path), "error": "old_text is ambiguous; it appears more than once"}
+
+        updated = plan["updated"]
+        if len(updated) > config.WILL_PERSPECTIVE_MAX_CHARS:
+            return {"path": str(path), "error": "updated perspective exceeds its configured prompt limit"}
+        old_hash = perspective.perspective_hash(current)
+        new_hash = perspective.perspective_hash(updated)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(updated, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return {"path": str(path), "error": str(exc)}
+
+        journal = perspective.append_identity_change(old_hash, new_hash, reason)
     return {
         "ok": True,
         "path": str(path),
