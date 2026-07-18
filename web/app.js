@@ -71,12 +71,49 @@ function el(tag, cls, text) {
   return e;
 }
 
+function formatAssistantDisplayText(text) {
+  const value = text == null ? '' : String(text);
+  const parts = value.split(/(```[\s\S]*?(?:```|$))/);
+  for (let i = 0; i < parts.length; i += 2) {
+    let prose = parts[i].replace(/\r\n?/g, '\n');
+    prose = prose.replace(/[ \t]+(?=#{1,6}[ \t]+\S)/g, '\n\n');
+    prose = prose.replace(/^[ \t]*#{1,6}[ \t]+/gm, '');
+    prose = prose.replace(/[ \t]+---[ \t]+/g, '\n\n');
+    prose = prose.replace(
+      /[ \t]+(?=(?:Audit Findings(?:[ \t]*\([^\n)]{1,100}\))?|Current Plan|Next Steps|Verdict(?:[ \t]+on[^:\n]{1,100})?):)/gi,
+      '\n\n'
+    );
+    prose = prose.replace(
+      /((?:^|\n)(?:Phase|Step)[ \t]+\d+(?:\.\d+)?[^\n]{0,180}?\bStatus:[ \t]*(?:IN PROGRESS|COMPLETE|COMPLETED|FAILED|BLOCKED|PAUSED|PASS|SECURE)(?:[ \t]*\([^\n)]{1,80}\))?)[ \t]+(?=[A-Z0-9])/gi,
+      '$1\n\n'
+    );
+    prose = prose.replace(/((?:^|\n)Next Steps:)[ \t]+(?=(?:Phase|Step)\b)/gi, '$1\n\n');
+    prose = prose.replace(
+      /((?:^|\n)(?:Phase|Step)[ \t]+\d+(?:\.\d+)?(?:[ \t]*\([^\n)]{1,80}\))?[ \t]*(?:—|-)[ \t]*[A-Z][^.!?\n]{1,100}?)[ \t]+(?=(?:The|This|I|We|Now)\b)/gi,
+      '$1\n\n'
+    );
+    prose = prose.replace(/([.!?:;)])[ \t]+(?=\d{1,2}[.)][ \t]+[A-Z0-9])/g, '$1\n\n');
+    prose = prose.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+    prose = prose.replace(/^[ \t]*(?:[-+*]|•)[ \t]+/gm, '- ');
+    prose = prose.split('\n').map(line => {
+      if (line.length <= 180 || /^\s*(?:[-•]|\d{1,2}[.)])\s/.test(line)) return line;
+      return line.replace(/([.!?])[ \t]+(?=["'“‘(]*[A-Z0-9])/g, '$1\n\n');
+    }).join('\n');
+    parts[i] = prose.trim();
+  }
+  return parts.filter(part => part.trim()).map(part => part.replace(/^\n+|\n+$/g, '')).join('\n\n')
+    .replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function setBubbleText(bubble, text) {
   const value = text == null ? '' : String(text);
+  const displayValue = bubble.dataset.role === 'assistant'
+    ? formatAssistantDisplayText(value)
+    : value;
   const content = bubble.querySelector('.bubble-content');
-  if (content) content.textContent = value;
-  else bubble.textContent = value;
-  bubble.dataset.copyText = value;
+  if (content) content.textContent = displayValue;
+  else bubble.textContent = displayValue;
+  bubble.dataset.copyText = displayValue;
   updateTranscriptBubble(bubble, value);
 }
 
@@ -400,6 +437,7 @@ async function loadRetrievalDefaults() {
 function addBubble(role, text, opts = {}) {
   const wrap = el('div', 'msg ' + role);
   const bubble = el('div', 'bubble');
+  bubble.dataset.role = role;
   bubble.appendChild(el('div', 'bubble-content'));
   const copy = el('button', 'copy-bubble', '⧉');
   copy.type = 'button';

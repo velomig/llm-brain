@@ -13,6 +13,7 @@ _FENCED_BLOCK_RE = re.compile(r"(```[\s\S]*?(?:```|$))")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _HEADING_SENTINEL = "\x02NEURAL_MAP_HEADING\x02"
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[\"'“‘(]*[A-Z0-9])")
+_STATUS_WORDS = r"IN PROGRESS|COMPLETE|COMPLETED|FAILED|BLOCKED|PAUSED|PASS|SECURE"
 
 
 def _protect_inline_code(text: str) -> tuple[str, list[str]]:
@@ -32,7 +33,7 @@ def _restore_inline_code(text: str, protected: list[str]) -> str:
     return text
 
 
-def _paragraphs(line: str, target: int = 220) -> list[str]:
+def _paragraphs(line: str, target: int = 180) -> list[str]:
     """Split a wall of prose at sentence boundaries without rewriting it."""
     if len(line) <= target or line.lstrip().startswith(("- ", "• ")) or " | " in line:
         return [line]
@@ -65,6 +66,39 @@ def _format_prose(text: str) -> str:
         text,
     )
     text = re.sub(r"[ \t]+---[ \t]+", "\n\n", text)
+
+    # Models also emit headings as ordinary prose. Recognize the recurring
+    # report vocabulary without requiring Markdown markers.
+    text = re.sub(
+        r"(?<!\n)[ \t]+(?=(?:Audit Findings(?:[ \t]*\([^\n)]{1,100}\))?|Current Plan|Next Steps|Verdict(?:[ \t]+on[^:\n]{1,100})?):)",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?:^|\n)(?:Phase|Step)[ \t]+\d+(?:\.\d+)?[^\n]{{0,180}}?\bStatus:[ \t]*(?:{_STATUS_WORDS})(?:[ \t]*\([^\n)]{{1,80}}\))?)[ \t]+(?=[A-Z0-9])",
+        r"\1\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"((?:^|\n)Next Steps:)[ \t]+(?=(?:Phase|Step)\b)",
+        r"\1\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"((?:^|\n)(?:Phase|Step)[ \t]+\d+(?:\.\d+)?(?:[ \t]*\([^\n)]{1,80}\))?[ \t]*(?:—|-)[ \t]*[A-Z][^.!?\n]{1,100}?)[ \t]+(?=(?:The|This|I|We|Now)\b)",
+        r"\1\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"((?:^|\n)Verdict(?:[ \t]+on[^:\n]{1,100})?:[ \t]*[^.!?\n]{1,100}[.!?])[ \t]+(?=[A-Z0-9])",
+        r"\1\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(
         r"(?<=[.!?:;])[ \t]+(?=(?:[-+*]|•)[ \t]+(?:\*\*)?\S)",
         "\n\n",
@@ -76,7 +110,7 @@ def _format_prose(text: str) -> str:
         text,
     )
     text = re.sub(
-        r"(?<=[.!?:;])[ \t]+(?=\d{1,2}[.)][ \t]+\S)",
+        r"(?<=[.!?:;)])[ \t]+(?=\d{1,2}[.)][ \t]+[A-Z0-9])",
         "\n\n",
         text,
     )
@@ -89,7 +123,7 @@ def _format_prose(text: str) -> str:
         flags=re.IGNORECASE,
     )
     text = re.sub(
-        r"(\*\*(?:IN PROGRESS|COMPLETE|COMPLETED|FAILED|BLOCKED)\*\*)[ \t]+(?=[A-Z0-9])",
+        rf"(\*\*(?:{_STATUS_WORDS})\*\*)[ \t]+(?=[A-Z0-9])",
         r"\1\n\n",
         text,
         flags=re.IGNORECASE,
