@@ -14,7 +14,7 @@ from brain import store
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.memory import MemoryUnit, now_iso
 from brain.toolkit import local_state, memory_tools, source_truth
-from brain.toolkit.paths import resolve_tool_path, trusted_prompt_path
+from brain.toolkit.paths import resolve_tool_path, trusted_prompt_path, trusted_prompt_update_target
 from brain.utils import file_lock
 
 PERMISSIONS_FILE = config.DB_DIR / ".neural_map_tool_permissions.json"
@@ -266,10 +266,16 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
         if tool == "write_file":
             path = resolve_tool_path(str(args.get("filename") or ""))
             if trusted_prompt_path(path):
+                target = trusted_prompt_update_target(path)
+                hint = (
+                    f"use update_source_of_truth with target={target}"
+                    if target
+                    else "use its dedicated update tool"
+                )
                 return {
                     "kind": "file_write",
                     "path": str(path),
-                    "blocked": "trusted prompt file; write_file will refuse this path",
+                    "blocked": f"trusted prompt file; write_file will refuse this path; {hint}",
                 }
             mode = str(args.get("mode") or "create")
             content = "" if args.get("content") is None else str(args.get("content"))
@@ -288,7 +294,8 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                 )
             return {"kind": "file_write", "path": str(path), "mode": mode, "chars": len(content), "diff": _snippet(diff, 6000)}
         if tool == "update_source_of_truth":
-            path = config.SOURCE_OF_TRUTH_PATH.resolve(strict=False)
+            path = source_truth.target_path(args)
+            target = str(args.get("target") or "source_of_truth").strip().lower()
             old_text = str(args.get("old_text") or "")
             new_text = str(args.get("new_text") or "")
             current = _file_text(path)
@@ -311,6 +318,7 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                 )
             return {
                 "kind": "source_of_truth_update",
+                "target": target,
                 "path": str(path),
                 "matches": matches,
                 "match_kind": match_kind,
@@ -437,7 +445,7 @@ def snapshot_action(tool: str, args: dict | None = None) -> dict:
         if tool == "write_file":
             return _file_snapshot(resolve_tool_path(str(args.get("filename") or "")))
         if tool == "update_source_of_truth":
-            return _file_snapshot(config.SOURCE_OF_TRUTH_PATH.resolve(strict=False))
+            return _file_snapshot(source_truth.target_path(args))
         if tool == "update_will_perspective":
             return _file_snapshot(config.WILL_PERSPECTIVE_PATH.resolve(strict=False))
         if tool in {"upsert_contact"}:

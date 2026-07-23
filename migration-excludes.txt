@@ -1,0 +1,21 @@
+/Library
+/.Trash
+/.cache
+/.lmstudio
+/.ollama
+/.unsloth
+/Calibre Library
+/ComfyUI
+/Desktop
+/Documents
+/Downloads
+/Fooocus
+/Movies
+/Music
+/Pictures
+/anythingllm-docs
+/docker-apps
+/hermes_studio
+/miniforge3
+/open-webui-main
+/openwebui-env

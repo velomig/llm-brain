@@ -6,9 +6,9 @@
 	<string>com.neuralmap.vaultwatch</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$HOME/Documents/LLM Brain/.venv/bin/python</string>
-		<string>$HOME/Documents/LLM Brain/ingest_md.py</string>
-		<string>$HOME/Documents/Obsidian Vault</string>
+		<string>/Users/example-user/Documents/LLM Brain/.venv/bin/python</string>
+		<string>/Users/example-user/Documents/LLM Brain/ingest_md.py</string>
+		<string>/Users/example-user/Documents/Obsidian Vault</string>
 		<string>--watch</string>
 		<string>--interval</string>
 		<string>60</string>
@@ -20,10 +20,10 @@
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>WorkingDirectory</key>
-	<string>$HOME/Documents/LLM Brain</string>
+	<string>/Users/example-user/Documents/LLM Brain</string>
 	<key>StandardOutPath</key>
-	<string>$HOME/Library/Logs/neuralmap/vaultwatch.out.log</string>
+	<string>/Users/example-user/Library/Logs/neuralmap/vaultwatch.out.log</string>
 	<key>StandardErrorPath</key>
-	<string>$HOME/Library/Logs/neuralmap/vaultwatch.err.log</string>
+	<string>/Users/example-user/Library/Logs/neuralmap/vaultwatch.err.log</string>
 </dict>
 </plist>

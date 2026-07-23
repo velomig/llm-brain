@@ -30,6 +30,17 @@ _CAPABILITY_TERMS = re.compile(
     re.IGNORECASE,
 )
 _NEWS_TERMS = re.compile(r"\b(news|headline|headlines|today|latest|current|recent)\b", re.IGNORECASE)
+_FINANCE_TERMS = re.compile(
+    r"\b(?:financ(?:e|es|ial)|portfolio|retirement|invest(?:ing|ment|ments)?|"
+    r"stocks?|etfs?|funds?|holdings?|positions?|tax(?:es|ation)?|"
+    r"fndx|fndy|fndz|acme|exco|coin|bitcoin)\b",
+    re.IGNORECASE,
+)
+_ANALYSIS_TERMS = re.compile(
+    r"\b(?:analysis|analy[sz]e|review|assess|evaluate|valuation|allocation|"
+    r"rebalance|performance|projection|forecast|scenario|compare|plan(?:ning)?)\b",
+    re.IGNORECASE,
+)
 _QUERY_PREFIXES = (
     re.compile(r"^(?:can|could|would|will)\s+you\s+(?:please\s+)?", re.IGNORECASE),
     re.compile(r"^please\s+", re.IGNORECASE),
@@ -463,7 +474,9 @@ def should_search(text: str) -> bool:
         return False
     if config.WEB_SEARCH_MODE == "always":
         return bool(text.strip())
-    return bool(_SEARCH_TERMS.search(text))
+    return bool(_SEARCH_TERMS.search(text)) or bool(
+        _FINANCE_TERMS.search(text) and _ANALYSIS_TERMS.search(text)
+    )
 
 
 def is_web_capability_question(text: str) -> bool:

@@ -164,6 +164,31 @@ def test_frontend_calls_backend_routes_that_have_user_facing_workflows():
     assert missing == set()
 
 
+def test_all_frontend_api_literals_resolve_to_backend_routes():
+    """Catch stale frontend links whenever a route is renamed or removed."""
+    literals = _api_literals(APP_JS.read_text())
+    routes = {route.path.rstrip("/") for route in server.app.routes}
+    static_routes = {route for route in routes if "{" not in route}
+    dynamic_prefixes = {
+        route.split("{", 1)[0].rstrip("/")
+        for route in routes
+        if "{" in route
+    }
+
+    missing = set()
+    for literal in literals:
+        path = literal.split("?", 1)[0].rstrip("/")
+        if path in static_routes:
+            continue
+        # Some frontend links append an encoded id at runtime, so the literal
+        # ends exactly where the backend's first {parameter} begins.
+        if path in dynamic_prefixes:
+            continue
+        missing.add(literal)
+
+    assert missing == set()
+
+
 def test_failed_approval_does_not_auto_queue_same_action_again():
     js = APP_JS.read_text()
     approve_body = js.split("async function approveAction(id)", 1)[1].split("async function rejectAction", 1)[0]

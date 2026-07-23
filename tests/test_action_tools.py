@@ -12,6 +12,7 @@ import server
 from brain import action_packages, store, tools
 from brain.toolkit import email as email_tools
 from brain.toolkit import project as project_tools
+from brain.toolkit import source_truth
 from util import store_memory
 
 
@@ -720,6 +721,50 @@ def test_update_source_of_truth_tolerates_line_wrapping(tmp_path, monkeypatch):
     assert approved["result"]["ok"] is True
     assert approved["result"]["match_kind"] == "whitespace_normalized"
     assert source.read_text(encoding="utf-8") == "Use America/Phoenix for all times and dates.\n"
+
+
+def test_update_source_of_truth_can_target_finance_with_approval_and_undo(tmp_path, monkeypatch):
+    source = tmp_path / "source-of-truth.md"
+    source.write_text("main truth stays unchanged\n", encoding="utf-8")
+    finance = tmp_path / "finance.md"
+    finance.write_text("| ACME shares | 10 | verify before action |\n", encoding="utf-8")
+    monkeypatch.setattr(config, "SOURCE_OF_TRUTH_PATH", source)
+    monkeypatch.setattr(config, "FINANCE_PATH", finance)
+
+    queued = tools.dispatch(
+        "update_source_of_truth",
+        {
+            "target": "finance",
+            "old_text": "| ACME shares | 10 | verify before action |",
+            "new_text": "| ACME shares | 10 | confirmed |",
+        },
+    )
+
+    assert queued["pending"] is True
+    assert queued["action"]["preview"]["target"] == "finance"
+    assert queued["action"]["preview"]["path"] == str(finance)
+    approved = tools.approve_pending(queued["action"]["id"])
+    assert approved["result"]["ok"] is True
+    assert approved["result"]["target"] == "finance"
+    assert "| ACME shares | 10 | confirmed |" in finance.read_text(encoding="utf-8")
+    assert source.read_text(encoding="utf-8") == "main truth stays unchanged\n"
+
+    undone = tools.undo_pending(queued["action"]["id"])
+    assert undone["result"]["ok"] is True
+    assert finance.read_text(encoding="utf-8") == "| ACME shares | 10 | verify before action |\n"
+
+
+def test_update_source_of_truth_rejects_unknown_target(tmp_path, monkeypatch):
+    source = tmp_path / "source-of-truth.md"
+    source.write_text("old\n", encoding="utf-8")
+    monkeypatch.setattr(config, "SOURCE_OF_TRUTH_PATH", source)
+
+    result = source_truth.update_source_of_truth(
+        {"target": "arbitrary_file", "old_text": "old", "new_text": "new"}
+    )
+
+    assert result["error"] == "target must be source_of_truth, nursing, or finance"
+    assert source.read_text(encoding="utf-8") == "old\n"
 
 
 def test_pending_action_undo_restores_memory_update():
