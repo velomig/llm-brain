@@ -155,7 +155,7 @@ _TOOL_NOTE_FRAGMENTS = {
     "list_files": "list_files/read_file (read-only local file inspection)",
     "read_file": "list_files/read_file (read-only local file inspection)",
     "write_file": "write_file (create/overwrite/append local text files)",
-    "update_source_of_truth": "update_source_of_truth (approval-gated Source of Truth patch)",
+    "update_source_of_truth": "update_source_of_truth (approval-gated trusted calibration patch, including finance.md)",
     "update_will_perspective": "update_will_perspective (approval-gated core-perspective refinement)",
     "search_local_files": "search_local_files (bounded local text search)",
     "inspect_document": "inspect_document (local text/PDF inspection)",
@@ -660,7 +660,12 @@ def _web_search_refusal(
     return None
 
 
-def _stock_quote_refusal(args: dict, basis: str, mems: list[dict] | None) -> str | None:
+def _stock_quote_refusal(
+    args: dict,
+    basis: str,
+    mems: list[dict] | None,
+    trusted_portfolio_text: str | None = None,
+) -> str | None:
     """Outbound-provenance guard for get_stock_quotes, mirroring web_search.
 
     Quote symbols are interpolated into the provider URL, so they leave the
@@ -673,7 +678,11 @@ def _stock_quote_refusal(args: dict, basis: str, mems: list[dict] | None) -> str
     requested = args.get("tickers") or []
     if isinstance(requested, str):
         requested = [requested]
-    allowed = allowed_quote_symbols(basis, mems)
+    allowed = allowed_quote_symbols(
+        basis,
+        mems,
+        trusted_portfolio_text=trusted_portfolio_text,
+    )
     blocked = sorted(
         {
             symbol
@@ -1169,6 +1178,31 @@ def _needs_web_prefetch(text: str, history: list[dict] | None = None) -> bool:
     return False
 
 
+def _trusted_finance_text_for_quotes(user_text: str, history: list[dict] | None = None) -> str | None:
+    """Return the confirmed-facts table for deterministic portfolio ticker harvest.
+
+    Other sections deliberately mention watch-list and unresolved symbols; those
+    are context for analysis, not confirmation that the user currently owns
+    them, so they must not be sent to the quote provider as holdings.
+    """
+    if "finance" not in domains.active_domains(user_text, history, strict=False):
+        return None
+    try:
+        text = config.FINANCE_PATH.read_text(encoding="utf-8")[: config.FINANCE_MAX_CHARS]
+    except OSError:
+        return None
+    match = re.search(
+        r"(?ims)^##\s+Confirmed Financial Facts\s*$\n(.*?)(?=^##\s+|\Z)",
+        text,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _needs_financial_prefetch(text: str, history: list[dict] | None = None) -> bool:
+    """Finance turns pre-resolve market data instead of relying on model initiative."""
+    return "finance" in domains.active_domains(text, history, strict=False)
+
+
 def _web_has_results(web_data: dict | None) -> bool:
     return isinstance(web_data, dict) and bool(web_data.get("results"))
 
@@ -1356,8 +1390,9 @@ def _tools_note_for(tool_specs: list[dict] | None = None) -> str:
         )
     if "update_source_of_truth" in names:
         note += (
-            "When the user asks to update the Source of Truth, use update_source_of_truth with an exact old_text "
-            "replacement; do not use generic file writes for that file. "
+            "When the user asks to update the Source of Truth or a trusted nursing/finance calibration, use "
+            "update_source_of_truth with an exact old_text replacement and target=finance or target=nursing when "
+            "applicable; do not use generic file writes for those files. "
         )
     if "update_will_perspective" in names:
         note += (
@@ -1551,9 +1586,20 @@ def _single_pass_answer(
     tool_results_seen = 0
     web_search_basis = _web_search_basis(user_text, history)
     private_search_terms = _private_query_terms(mems)
+    trusted_finance_text = _trusted_finance_text_for_quotes(user_text, history)
+    prefetched_live_data = (
+        market_context_for(
+            user_text,
+            memories=mems,
+            trusted_portfolio_text=trusted_finance_text,
+        )
+        if _needs_financial_prefetch(user_text, history)
+        else None
+    )
     prefetched_web_data = web_context_for(web_search_basis) if (not guard_web and _needs_web_prefetch(user_text, history)) else None
     prompt_grounding = semantic_grounding.enrich_from_outcomes(
         grounding_state or {"enabled": False},
+        live_data=prefetched_live_data,
         web_data=prefetched_web_data,
     )
     prompt_grounding_gate = semantic_grounding.gate_for_request(user_text, prompt_grounding)
@@ -1564,6 +1610,18 @@ def _single_pass_answer(
     turn_taint: list[str] = []
     if mems:
         turn_taint.append("retrieved_memories")
+    # Prefetched external data is injected into the system prompt before
+    # generation, so it can steer a proposed action exactly like a tool
+    # result would. Taint the turn up front, or an action influenced by
+    # prefetched web/market content reaches approval showing taint=[].
+    if isinstance(prefetched_web_data, dict) and (
+        prefetched_web_data.get("results") or prefetched_web_data.get("errors")
+    ):
+        turn_taint.append("web_search")
+    if isinstance(prefetched_live_data, dict) and (
+        prefetched_live_data.get("quotes") or prefetched_live_data.get("errors")
+    ):
+        turn_taint.append("market_data")
 
     def _add_taint(source: str) -> None:
         if source not in turn_taint:
@@ -1617,7 +1675,12 @@ def _single_pass_answer(
             # Same outbound-provenance rule as web_search above: the symbols
             # ride in the provider URL. Refusals return before the generic
             # dispatch so they don't count as a tool result for this turn.
-            refusal = _stock_quote_refusal(args, web_search_basis, mems)
+            refusal = _stock_quote_refusal(
+                args,
+                web_search_basis,
+                mems,
+                trusted_portfolio_text=trusted_finance_text,
+            )
             if refusal:
                 return {"error": refusal}
         result = tools.dispatch(tool_name, args, taint=list(turn_taint))
@@ -1630,6 +1693,8 @@ def _single_pass_answer(
         tool_specs = [s for s in tool_specs if s.get("function", {}).get("name") != "web_search"]
     elif isinstance(prefetched_web_data, dict) and (prefetched_web_data.get("results") or prefetched_web_data.get("capability")):
         tool_specs = [s for s in tool_specs if s.get("function", {}).get("name") != "web_search"]
+    if isinstance(prefetched_live_data, dict) and prefetched_live_data.get("quotes"):
+        tool_specs = [s for s in tool_specs if s.get("function", {}).get("name") != "get_stock_quotes"]
 
     def empty_tool_reply(used: list[dict]) -> str:
         names = [str(call.get("tool") or "tool") for call in used]
@@ -1667,6 +1732,7 @@ def _single_pass_answer(
             system = build_system(
                 mems,
                 user_text=user_text,
+                live_data=prefetched_live_data,
                 web_data=prefetched_web_data,
                 reminders=reminders,
                 initiatives=initiatives,
@@ -1692,7 +1758,8 @@ def _single_pass_answer(
                     "used" if used else "no_tools_used",
                     tools=",".join(str(c.get("tool") or "") for c in used),
                 )
-                live_data, tool_web_data = tools.split_used(used)
+                tool_live_data, tool_web_data = tools.split_used(used)
+                live_data = tool_live_data or prefetched_live_data
                 web_data = tool_web_data or prefetched_web_data
                 return {
                     "reply": reply or empty_tool_reply(used),
@@ -1707,8 +1774,20 @@ def _single_pass_answer(
             log.fallback("tool_calling_failed", exc, model=name)
             observability.event(trace, "tool_calling", "failed", error=type(exc).__name__)
 
-    live_data = market_context_for(user_text, memories=mems)
-    web_data = web_context_for(user_text)
+    live_data = prefetched_live_data or market_context_for(
+        user_text,
+        memories=mems,
+        trusted_portfolio_text=trusted_finance_text,
+    )
+    # Reuse the guarded prefetch: an unconditional second search here would
+    # both repeat an identical outbound query and bypass the web privacy
+    # guard that already suppressed the prefetch for this turn.
+    if guard_web:
+        web_data = None
+    elif prefetched_web_data is not None:
+        web_data = prefetched_web_data
+    else:
+        web_data = web_context_for(user_text)
     prompt_grounding = semantic_grounding.enrich_from_outcomes(
         prompt_grounding,
         live_data=live_data,

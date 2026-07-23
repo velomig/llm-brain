@@ -761,6 +761,10 @@ def test_web_search_recovers_with_literal_user_ticker(monkeypatch):
 
     monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
     monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+    # The finance+analysis wording now also qualifies for the eager prefetch,
+    # which would answer from injected results (and hit the live web in a
+    # test). This test covers the tool-path recovery, so keep the tool route.
+    monkeypatch.setattr(pipeline, "_needs_web_prefetch", lambda *a, **k: False)
     monkeypatch.setattr(
         pipeline.tools,
         "dispatch",

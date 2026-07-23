@@ -5,7 +5,13 @@ from pathlib import Path
 
 import config
 from brain import sensory
-from brain.toolkit.paths import resolve_tool_path, skip_search_path, trusted_prompt_path, within_allowed_roots
+from brain.toolkit.paths import (
+    resolve_tool_path,
+    skip_search_path,
+    trusted_prompt_path,
+    trusted_prompt_update_target,
+    within_allowed_roots,
+)
 
 
 def _read_text_prefix(path: Path, max_chars: int) -> tuple[str | None, bool, int | None, str | None]:
@@ -77,11 +83,16 @@ def write_file(args: dict) -> dict:
     try:
         path = resolve_tool_path(filename)
         if trusted_prompt_path(path):
+            target = trusted_prompt_update_target(path)
+            hint = (
+                f"use update_source_of_truth with target={target}"
+                if target
+                else "use its dedicated update tool"
+            )
             return {
                 "path": str(path),
                 "error": "this file is injected into the system prompt as trusted and is "
-                "reserved from write_file; use its dedicated update tool "
-                "(e.g. update_source_of_truth) or edit it directly",
+                f"reserved from write_file; {hint} or edit it directly",
             }
         if mode not in {"create", "overwrite", "append"}:
             return {"path": str(path), "error": "mode must be create, overwrite, or append"}

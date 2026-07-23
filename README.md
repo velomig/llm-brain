@@ -146,9 +146,10 @@ A single-page UI (FastAPI backend + vanilla JS, no build step) over the same
   not advertised. `get_stock_quotes` follows the same outbound-provenance rule:
   ticker arguments are interpolated into the quote-provider URL, so a symbol is
   sent only if the user typed it, or — when the user asks about *their own*
-  holdings ("update my portfolio prices") — if it comes from the deterministic
-  ticker harvest over a pinned, source-free memory explicitly categorized as
-  portfolio/holdings/positions/investments. Model-composed symbols and symbols
+  holdings ("update my portfolio prices" or "do a portfolio analysis") — if it
+  comes from the deterministic ticker harvest over a pinned, source-free memory
+  explicitly categorized as portfolio/holdings/positions/investments, or a
+  pinned note that explicitly states owned share counts. Model-composed symbols and symbols
   from uploads, generated notes, or unpinned memories are refused, in chat and
   in background tasks alike (background tasks allow only prompt-named tickers).
   File tools are read-only and confined to
@@ -157,14 +158,19 @@ A single-page UI (FastAPI backend + vanilla JS, no build step) over the same
   back to the eager context injection below — the model itself never browses.
 - **Live quote context** — quote/portfolio questions that include ticker symbols
   can receive a small live quote JSON block from Yahoo Finance before the model
-  answers (eager fallback for models without tool calling). Deliberate privacy
+  answers. Financial-analysis turns prefetch this data even for tool-capable
+  models, so current-data grounding does not depend on model initiative. The
+  trusted `finance.md` calibration file is also used as a deterministic source
+  of portfolio tickers; only ticker symbols are sent to the provider. Deliberate privacy
   exception: when you ask about your own holdings without naming symbols, up to
   a dozen validated ticker-shaped tokens harvested from a retrieved memory are
   sent to Yahoo Finance to resolve prices. That memory must be source-free,
-  pinned by you, and explicitly categorized as portfolio, holdings, positions,
-  or investments; arbitrary uploads and generated memories never qualify.
+  pinned by you, and either explicitly categorized as portfolio, holdings,
+  positions, or investments or written as an explicit owned-share snapshot;
+  arbitrary uploads and generated memories never qualify.
 - **Web search context** — when a prompt looks like it needs current/external
   information, a small web-search JSON block is fetched before the model answers.
+  Financial-analysis requests always qualify for this current-data prefetch.
   Search is general-purpose, not topic-specific: ask naturally (for example,
   "research beginner sourdough hydration") or use `/search <topic>` for an
   explicit public-web lookup.

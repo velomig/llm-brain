@@ -137,7 +137,16 @@ TOOL_SPECS = [
     _spec("execute_python_code", "Run a small sandboxed Python script.", {"script": {"type": "string"}}, ["script"]),
     _spec("send_email", "Draft or send a plain-text email when SMTP sending is configured.", {"recipient": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}, ["recipient", "subject", "body"]),
     _spec("write_file", "Create, overwrite, or append a UTF-8 text file inside allowed roots.", {"filename": {"type": "string"}, "content": {"type": "string"}, "mode": {"type": "string", "enum": ["create", "overwrite", "append"]}}, ["filename", "content"]),
-    _spec("update_source_of_truth", "Patch the trusted Source of Truth by replacing exact old_text with new_text. Requires approval and shows a diff.", {"old_text": {"type": "string"}, "new_text": {"type": "string"}}, ["old_text", "new_text"]),
+    _spec(
+        "update_source_of_truth",
+        "Patch the trusted Source of Truth or a domain calibration file by replacing exact old_text with new_text. Use target=finance for finance.md or target=nursing for nursing.md; omit target for the main Source of Truth. Requires approval and shows a diff.",
+        {
+            "target": {"type": "string", "enum": ["source_of_truth", "nursing", "finance"]},
+            "old_text": {"type": "string"},
+            "new_text": {"type": "string"},
+        },
+        ["old_text", "new_text"],
+    ),
     _spec("update_will_perspective", "Propose a small identity-level refinement to Will's core perspective by replacing exact old_text with new_text. Requires approval, shows a diff, and journals approved changes.", {"old_text": {"type": "string"}, "new_text": {"type": "string"}, "reason": {"type": "string"}}, ["old_text", "new_text"]),
     _spec("review_action_package", "Queue or record a review-only Action Package. Approval stores the package locally and does not execute any external action.", {"title": {"type": "string"}, "body": {"type": "string"}, "source_initiative_id": {"type": "string"}, "priority": {"type": "integer"}}, ["title", "body"]),
     _spec("search_local_files", "Search text snippets in local workspace files on disk under an allowed root. This does not search Neural Map memory-manager notes.", {"query": {"type": "string"}, "path": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]),
@@ -420,11 +429,18 @@ def dispatch(name: str, args: dict | None = None, taint: list[str] | None = None
     if name in ACTION_TOOL_NAMES and not config.ACTION_TOOLS_ENABLED:
         return {"error": "action tools are disabled"}
     if requires_approval(name, args):
+        preview = governance.preview_action(name, args or {})
+        if preview.get("blocked"):
+            return {
+                "error": preview["blocked"],
+                "path": preview.get("path"),
+                "error_kind": "blocked_preflight",
+            }
         action = pending.create(
             name,
             args or {},
             policy_for(name, args),
-            preview=governance.preview_action(name, args or {}),
+            preview=preview,
             snapshot=governance.snapshot_action(name, args or {}),
             taint=taint,
         )

@@ -1,17 +1,30 @@
 """Source of Truth maintenance tool."""
 from __future__ import annotations
 
-import os
 import re
-import threading
-import uuid
+from pathlib import Path
 
 import config
-from brain.utils import path_lock
+from brain.utils import path_lock, replace_private
 
 
-def _source_path():
-    return config.SOURCE_OF_TRUTH_PATH.resolve(strict=False)
+def target_path(args: dict | None = None) -> Path:
+    """Resolve an allow-listed trusted calibration target.
+
+    The generic file writer deliberately cannot edit files injected into the
+    system prompt. Keep this updater equally narrow: callers choose a logical
+    target, never an arbitrary path. The default preserves the original
+    update_source_of_truth API.
+    """
+    target = str((args or {}).get("target") or "source_of_truth").strip().lower()
+    paths = {
+        "source_of_truth": config.SOURCE_OF_TRUTH_PATH,
+        "nursing": config.NURSING_PATH,
+        "finance": config.FINANCE_PATH,
+    }
+    if target not in paths:
+        raise ValueError("target must be source_of_truth, nursing, or finance")
+    return paths[target].resolve(strict=False)
 
 
 def plan_replacement(text: str, old_text: str, new_text: str) -> dict:
@@ -38,12 +51,16 @@ def plan_replacement(text: str, old_text: str, new_text: str) -> dict:
 def update_source_of_truth(args: dict) -> dict:
     old_text = str((args or {}).get("old_text") or "")
     new_text = str((args or {}).get("new_text") or "")
+    target = str((args or {}).get("target") or "source_of_truth").strip().lower()
     if not old_text or not new_text:
         return {"error": "old_text and new_text are required"}
     if len(new_text) > config.MAX_TOOL_WRITE_CHARS:
         return {"error": "new_text too long"}
 
-    path = _source_path()
+    try:
+        path = target_path(args)
+    except ValueError as exc:
+        return {"error": str(exc)}
     with path_lock(path, config.DB_DIR, prefix="trusted_prompt"):
         try:
             text = path.read_text(encoding="utf-8")
@@ -60,19 +77,14 @@ def update_source_of_truth(args: dict) -> dict:
             return {"path": str(path), "error": "old_text is ambiguous; it appears more than once"}
 
         updated = plan["updated"]
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
         try:
-            tmp.write_text(updated, encoding="utf-8")
-            tmp.replace(path)
+            replace_private(path, updated)
         except OSError as exc:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
             return {"path": str(path), "error": str(exc)}
 
     return {
         "ok": True,
+        "target": target,
         "path": str(path),
         "old_chars": len(old_text),
         "new_chars": len(new_text),

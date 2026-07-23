@@ -66,3 +66,17 @@ def trusted_prompt_path(resolved: Path) -> bool:
         config.WILL_PERSPECTIVE_JOURNAL_PATH,
     }
     return any(resolved == Path(p).resolve(strict=False) for p in trusted)
+
+
+def trusted_prompt_update_target(resolved: Path) -> str | None:
+    """Return the dedicated updater target for editable trusted calibrations.
+
+    Other trusted prompt files have specialized semantics or no model-facing
+    updater and must remain direct-edit only.
+    """
+    editable = {
+        config.SOURCE_OF_TRUTH_PATH.resolve(strict=False): "source_of_truth",
+        config.NURSING_PATH.resolve(strict=False): "nursing",
+        config.FINANCE_PATH.resolve(strict=False): "finance",
+    }
+    return editable.get(resolved)

@@ -1,14 +1,10 @@
 """Approval-gated updates to Will's trusted core perspective."""
 from __future__ import annotations
 
-import os
-import threading
-import uuid
-
 import config
 from brain import perspective
 from brain.toolkit.source_truth import plan_replacement
-from brain.utils import path_lock
+from brain.utils import path_lock, replace_private
 
 
 def update_will_perspective(args: dict) -> dict:
@@ -41,15 +37,9 @@ def update_will_perspective(args: dict) -> dict:
             return {"path": str(path), "error": "updated perspective exceeds its configured prompt limit"}
         old_hash = perspective.perspective_hash(current)
         new_hash = perspective.perspective_hash(updated)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
         try:
-            tmp.write_text(updated, encoding="utf-8")
-            os.replace(tmp, path)
+            replace_private(path, updated)
         except OSError as exc:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
             return {"path": str(path), "error": str(exc)}
 
         journal = perspective.append_identity_change(old_hash, new_hash, reason)

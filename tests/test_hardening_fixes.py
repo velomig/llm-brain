@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
-from brain import domains, graph, pipeline, store
+from brain import domains, graph, pipeline, store, tools
 from brain.memory import MemoryUnit
 from brain.retriever import _domain_opt_in_filter
 from brain.toolkit import files, governance
@@ -44,6 +44,20 @@ def test_write_file_refuses_trusted_prompt_file(tmp_path, monkeypatch):
     assert trusted.read_text(encoding="utf-8") == "TRUSTED"   # untouched
 
 
+def test_write_file_finance_refusal_names_the_supported_update_target(tmp_path, monkeypatch):
+    finance = tmp_path / "finance.md"
+    finance.write_text("TRUSTED", encoding="utf-8")
+    monkeypatch.setattr(config, "FINANCE_PATH", finance)
+    monkeypatch.setattr(config, "TOOL_ALLOWED_ROOTS", [tmp_path])
+
+    result = files.write_file(
+        {"filename": str(finance), "content": "replacement", "mode": "overwrite"}
+    )
+
+    assert "update_source_of_truth with target=finance" in result["error"]
+    assert finance.read_text(encoding="utf-8") == "TRUSTED"
+
+
 def test_write_file_refuses_append_to_trusted_prompt_file(tmp_path, monkeypatch):
     trusted = _reserve_setup(tmp_path, monkeypatch)
 
@@ -59,6 +73,23 @@ def test_write_file_preview_marks_trusted_path_blocked(tmp_path, monkeypatch):
     preview = governance.preview_action("write_file", {"filename": str(trusted), "content": "x"})
 
     assert preview.get("blocked")
+
+
+def test_write_file_dispatch_rejects_finance_before_approval(tmp_path, monkeypatch):
+    finance = tmp_path / "finance.md"
+    finance.write_text("TRUSTED", encoding="utf-8")
+    monkeypatch.setattr(config, "FINANCE_PATH", finance)
+    monkeypatch.setattr(config, "TOOL_ALLOWED_ROOTS", [tmp_path])
+
+    result = tools.dispatch(
+        "write_file",
+        {"filename": str(finance), "content": "replacement", "mode": "overwrite"},
+    )
+
+    assert result["error_kind"] == "blocked_preflight"
+    assert "update_source_of_truth with target=finance" in result["error"]
+    assert "pending" not in result
+    assert finance.read_text(encoding="utf-8") == "TRUSTED"
 
 
 def test_write_file_still_writes_ordinary_files(tmp_path, monkeypatch):

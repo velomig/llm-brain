@@ -61,6 +61,18 @@ _OWNERSHIP_TERMS = re.compile(
     re.IGNORECASE,
 )
 
+# A request to analyze/review "the" or "a" portfolio is how users commonly
+# refer to the portfolio already stored in their personal memory.  This is not
+# enough on its own to release arbitrary recalled text: the memory still has to
+# pass _approved_portfolio_memory below.
+_PORTFOLIO_ANALYSIS_TERMS = re.compile(
+    r"\b(?:portfolio|holdings?|positions?|investments?)\b.{0,30}"
+    r"\b(?:analysis|analy[sz]e|review|valuation|allocation|snapshot|performance|breakdown)\b"
+    r"|\b(?:analysis|analy[sz]e|review|valuation|allocation|snapshot|performance|breakdown|look at)\b"
+    r".{0,30}\b(?:portfolio|holdings?|positions?|investments?)\b",
+    re.IGNORECASE,
+)
+
 # Memory-derived symbols are an explicit outbound-data exception.  A generic
 # retrieved fact or uploaded document is not sufficient authorization: the user
 # must have pinned a source-free memory in a portfolio-specific category.  This
@@ -77,12 +89,25 @@ _PORTFOLIO_CATEGORY_TERMS = {
     "investments",
 }
 
+_EXPLICIT_HOLDINGS_TEXT = re.compile(
+    r"\b(?:i|we)\s+(?:currently\s+)?(?:have|hold|own)\b.{0,160}\bshares?\s+(?:of\s+)?"
+    r"|\b(?:portfolio|holdings?|positions?)\b.{0,160}\bshares?\b"
+    r"|\bshares?\s+(?:of\s+)?[A-Z][A-Z0-9.-]{1,9}\b",
+    re.IGNORECASE,
+)
+
 
 def _approved_portfolio_memory(memory: dict) -> bool:
     if not isinstance(memory, dict) or not memory.get("pinned") or memory.get("source"):
         return False
     category_terms = set(re.findall(r"[a-z0-9]+", str(memory.get("category") or "").casefold()))
-    return bool(category_terms & _PORTFOLIO_CATEGORY_TERMS)
+    if category_terms & _PORTFOLIO_CATEGORY_TERMS:
+        return True
+    # The memory manager's default category is "note".  A user can therefore
+    # pin a canonical holdings snapshot without manually recategorizing it.
+    # Accept only text that explicitly states ownership/share counts; a generic
+    # pinned note mentioning a ticker is still not outbound authorization.
+    return bool(_EXPLICIT_HOLDINGS_TEXT.search(str(memory.get("text") or "")))
 
 
 def quote_request_tickers(text: str) -> list[str]:
@@ -101,7 +126,11 @@ def quote_request_tickers(text: str) -> list[str]:
     return symbols
 
 
-def tickers_from_memories(memories: list[dict] | None, limit: int | None = None) -> list[str]:
+def tickers_from_memories(
+    memories: list[dict] | None,
+    limit: int | None = None,
+    trusted_portfolio_text: str | None = None,
+) -> list[str]:
     """Harvest ticker-like symbols out of retrieved memory text.
 
     Used when the user asks about *their* holdings ("update my portfolio
@@ -112,13 +141,20 @@ def tickers_from_memories(memories: list[dict] | None, limit: int | None = None)
     "SCHD123.456"), so we strip trailing digits off each candidate and drop a
     wide set of non-ticker acronyms.
     """
-    if not config.MARKET_QUOTES_ENABLED or not memories:
+    if not config.MARKET_QUOTES_ENABLED or (not memories and not trusted_portfolio_text):
         return []
     limit = config.MAX_QUOTE_TICKERS if limit is None else limit
-    approved = [m for m in memories if _approved_portfolio_memory(m)]
-    if not approved:
+    approved = [m for m in (memories or []) if _approved_portfolio_memory(m)]
+    blobs = [(m.get("text") or "") for m in approved]
+    # The caller may also supply the bounded contents of the user's trusted
+    # finance calibration file. Unlike retrieved memories, that file is an
+    # explicit local source of portfolio truth and only ticker tokens—not the
+    # text or share counts—are sent to the quote provider.
+    if trusted_portfolio_text:
+        blobs.append(trusted_portfolio_text)
+    if not blobs:
         return []
-    blob = "\n".join((m.get("text") or "") for m in approved)
+    blob = "\n".join(blobs)
     symbols: list[str] = []
     for raw in _TICKER.findall(blob):
         symbol = re.sub(r"\d+$", "", raw.lstrip("$").strip(".").upper())
@@ -137,7 +173,11 @@ def tickers_from_memories(memories: list[dict] | None, limit: int | None = None)
 _USER_TOKEN = re.compile(r"\$?[A-Za-z][A-Za-z0-9.\-]{0,11}")
 
 
-def allowed_quote_symbols(user_text: str, memories: list[dict] | None = None) -> set[str]:
+def allowed_quote_symbols(
+    user_text: str,
+    memories: list[dict] | None = None,
+    trusted_portfolio_text: str | None = None,
+) -> set[str]:
     """Symbols a get_stock_quotes call may send to the quote provider.
 
     Tool arguments are interpolated into the provider URL, so they leave the
@@ -156,11 +196,17 @@ def allowed_quote_symbols(user_text: str, memories: list[dict] | None = None) ->
         symbol = raw.lstrip("$").strip(".").upper()
         if symbol:
             allowed.add(symbol)
-    if _QUOTE_TERMS.search(text) and _OWNERSHIP_TERMS.search(text):
+    if _QUOTE_TERMS.search(text) and (
+        _OWNERSHIP_TERMS.search(text) or _PORTFOLIO_ANALYSIS_TERMS.search(text)
+    ):
         # Broader cap than one eager request: the allowlist spans a whole tool
         # loop, while each outbound call is still capped at MAX_QUOTE_TICKERS
         # by the get_stock_quotes handler itself.
-        allowed.update(tickers_from_memories(memories, limit=4 * config.MAX_QUOTE_TICKERS))
+        allowed.update(tickers_from_memories(
+            memories,
+            limit=4 * config.MAX_QUOTE_TICKERS,
+            trusted_portfolio_text=trusted_portfolio_text,
+        ))
     return allowed
 
 
@@ -219,13 +265,22 @@ def fetch_quotes(symbols: list[str]) -> dict:
     }
 
 
-def market_context_for(text: str, memories: list[dict] | None = None) -> dict | None:
+def market_context_for(
+    text: str,
+    memories: list[dict] | None = None,
+    trusted_portfolio_text: str | None = None,
+) -> dict | None:
     symbols = quote_request_tickers(text)
     from_memory = False
     # No tickers typed, but the user is asking about THEIR holdings — pull the
     # symbols from memory (that's what the memory is for) and validate them.
-    if not symbols and _QUOTE_TERMS.search(text) and _OWNERSHIP_TERMS.search(text):
-        symbols = tickers_from_memories(memories)
+    if not symbols and _QUOTE_TERMS.search(text) and (
+        _OWNERSHIP_TERMS.search(text) or _PORTFOLIO_ANALYSIS_TERMS.search(text)
+    ):
+        symbols = tickers_from_memories(
+            memories,
+            trusted_portfolio_text=trusted_portfolio_text,
+        )
         from_memory = True
     if not symbols:
         return None
@@ -240,10 +295,13 @@ def market_context_for(text: str, memories: list[dict] | None = None) -> dict | 
         }
     if from_memory:
         # Symbols were guessed from memory, so keep only the ones the provider
-        # confirmed and don't surface guess-misses as if the user asked for them.
+        # confirmed. Preserve provider/transport failures so the caller can
+        # explain why current data is unavailable instead of silently acting as
+        # though no live-data request was made.
         data["quotes"] = [q for q in data["quotes"] if q.get("price") is not None]
-        data["errors"] = []
-        data["source"] = "portfolio tickers resolved from memory"
-        if not data["quotes"]:
-            return None
+        data["source"] = (
+            "portfolio tickers resolved from trusted finance calibration"
+            if trusted_portfolio_text
+            else "portfolio tickers resolved from memory"
+        )
     return data

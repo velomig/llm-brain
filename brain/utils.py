@@ -4,14 +4,44 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import re
 import threading
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 
 _PATH_LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.Lock] = {}
+
+
+def replace_private(path: Path, text: str) -> None:
+    """Atomically replace `path` with `text`, keeping the file owner-only.
+
+    Path.write_text on the temp file applies the process umask (typically
+    producing 0644), so every atomic update of a private file silently widens
+    its permissions. These are trusted prompt/calibration files with personal
+    content: the replacement is always created 0600, which also heals a file
+    that a previous update already widened.
+    """
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def clean_text(value, limit: int = 240) -> str:

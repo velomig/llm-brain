@@ -16,17 +16,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from brain import portable
 
 
+def _write_owner_only(path: Path, text: str) -> None:
+    """Write the export 0600: it is the entire memory archive, so it must not
+    inherit a permissive umask (same pattern as portable.save_backup)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _export(args: argparse.Namespace) -> None:
     data = portable.export_data(model=args.model)
     text = portable.to_markdown(data) if args.format == "md" else json.dumps(data, ensure_ascii=False, indent=2)
     if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
+        _write_owner_only(Path(args.out), text)
         print(f"exported {data['neural_map_export']['count']} memories "
               f"({len(data['neural_map_export']['graph'])} edges) -> {args.out}")
     else:

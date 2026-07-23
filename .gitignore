@@ -1,5 +1,8 @@
 .venv/
 memory_store/
+# Raw database snapshots hold the complete memory content — never commit them.
+chroma-index-backup*/
+*chroma-index-backup*/
 __pycache__/
 *.pyc
 .pytest_cache/

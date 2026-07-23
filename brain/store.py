@@ -55,6 +55,20 @@ def _revision_lock():
     return file_lock(_REVISION_FILE.with_name(".neural_map_revisions.lock"))
 
 
+_METADATA_THREAD_LOCK = threading.Lock()
+
+
+def _metadata_lock():
+    """Cross-process lock serializing metadata read-modify-write cycles.
+
+    reinforce/mark_superseded/update_metadata each rebuild the WHOLE metadata
+    object from a fresh read. Without serialization, a concurrent recall's
+    reinforce can write back stale pinned/status/importance fields it read
+    before another process's update landed — silently undoing a user choice
+    (and pinned participates in outbound portfolio-symbol authorization)."""
+    return file_lock(config.DB_DIR / ".neural_map_metadata.lock")
+
+
 def _read_versions() -> dict[str, int]:
     try:
         with _REVISION_FILE.open("r", encoding="utf-8") as fh:
@@ -238,16 +252,17 @@ def reinforce(ids: list[str], model: str | None = None, text_only: bool = False)
     if not ids:
         return 0
     col = _collection(model, text_only=text_only)
-    got = col.get(ids=ids, include=["metadatas"])
-    found = got["ids"]
-    if not found:
-        return 0
-    stamp = now_iso()
-    metas = [
-        {**(m or {}), "access_count": int((m or {}).get("access_count", 0)) + 1, "last_accessed": stamp}
-        for m in got["metadatas"]
-    ]
-    col.update(ids=found, metadatas=metas)
+    with _METADATA_THREAD_LOCK, _metadata_lock():
+        got = col.get(ids=ids, include=["metadatas"])
+        found = got["ids"]
+        if not found:
+            return 0
+        stamp = now_iso()
+        metas = [
+            {**(m or {}), "access_count": int((m or {}).get("access_count", 0)) + 1, "last_accessed": stamp}
+            for m in got["metadatas"]
+        ]
+        col.update(ids=found, metadatas=metas)
     return len(found)
 
 
@@ -260,12 +275,13 @@ def mark_superseded(ids: list[str], model: str | None = None, text_only: bool = 
     if not ids:
         return 0
     col = _collection(model, text_only=text_only)
-    got = col.get(ids=ids, include=["metadatas"])
-    found = got["ids"]
-    if not found:
-        return 0
-    metas = [{**(m or {}), "superseded": True} for m in got["metadatas"]]
-    col.update(ids=found, metadatas=metas)
+    with _METADATA_THREAD_LOCK, _metadata_lock():
+        got = col.get(ids=ids, include=["metadatas"])
+        found = got["ids"]
+        if not found:
+            return 0
+        metas = [{**(m or {}), "superseded": True} for m in got["metadatas"]]
+        col.update(ids=found, metadatas=metas)
     _bump_version(model, text_only=text_only)
     return len(found)
 
@@ -280,12 +296,13 @@ def update_metadata(ids: list[str], patch: dict, model: str | None = None, text_
     if not ids or not patch:
         return 0
     col = _collection(model, text_only=text_only)
-    got = col.get(ids=ids, include=["metadatas"])
-    found = got["ids"]
-    if not found:
-        return 0
-    metas = [{**(m or {}), **patch} for m in got["metadatas"]]
-    col.update(ids=found, metadatas=metas)
+    with _METADATA_THREAD_LOCK, _metadata_lock():
+        got = col.get(ids=ids, include=["metadatas"])
+        found = got["ids"]
+        if not found:
+            return 0
+        metas = [{**(m or {}), **patch} for m in got["metadatas"]]
+        col.update(ids=found, metadatas=metas)
     _bump_version(model, text_only=text_only)
     return len(found)
 

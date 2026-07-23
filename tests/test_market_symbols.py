@@ -99,6 +99,7 @@ def _run_tool_turn(monkeypatch, user_text, mems, tool_calls):
     monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
     monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
     monkeypatch.setattr(pipeline, "web_context_for", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_needs_financial_prefetch", lambda *a, **k: False)
     pipeline.answer(user_text, mems)
     return results
 
@@ -139,3 +140,129 @@ def test_dispatch_allows_portfolio_harvest_for_ownership_questions(monkeypatch):
     )
     assert not result.get("error")
     assert fetched == ["SCHD"]
+
+
+def test_dispatch_allows_pinned_holdings_note_for_portfolio_analysis(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(market, "_fetch_chart_quote", lambda s: fetched.append(s) or {"symbol": s, "price": 1.0})
+
+    mems = [{
+        "id": "m1",
+        "text": "I currently have 1175.808 shares of SCHD, 59.421 shares of FXAIX, 69.156 shares of SGOV, 10 shares of SPCX",
+        "category": "note",
+        "pinned": True,
+        "source": None,
+    }]
+    (result,) = _run_tool_turn(
+        monkeypatch,
+        "lets do a portfolio analysis",
+        mems,
+        [("get_stock_quotes", {"tickers": ["SCHD", "FXAIX", "SGOV", "SPCX"]})],
+    )
+    assert not result.get("error")
+    assert fetched == ["SCHD", "FXAIX", "SGOV", "SPCX"]
+
+
+def test_dispatch_still_refuses_generic_pinned_note_for_portfolio_analysis(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(market, "_fetch_chart_quote", lambda s: fetched.append(s) or {"symbol": s, "price": 1.0})
+
+    mems = [{
+        "id": "m1",
+        "text": "Research note: compare SCHD with SECR next quarter.",
+        "category": "note",
+        "pinned": True,
+        "source": None,
+    }]
+    (result,) = _run_tool_turn(
+        monkeypatch,
+        "lets do a portfolio analysis",
+        mems,
+        [("get_stock_quotes", {"tickers": ["SECR"]})],
+    )
+    assert "SECR" in result["error"]
+    assert fetched == []
+
+
+def test_trusted_finance_file_tickers_are_available_for_portfolio_analysis():
+    finance = """# Finance\n\n| SCHD shares | 1,175.808 |\n| FXAIX shares | 59.421 |\n| SGOV shares | 69.156 |\n| SPCX shares | 10 |\n"""
+
+    allowed = market.allowed_quote_symbols(
+        "lets do a portfolio analysis",
+        [],
+        trusted_portfolio_text=finance,
+    )
+
+    assert {"SCHD", "FXAIX", "SGOV", "SPCX"} <= allowed
+
+
+def test_tool_path_prefetches_finance_file_quotes_for_portfolio_analysis(monkeypatch, tmp_path):
+    finance_path = tmp_path / "finance.md"
+    finance_path.write_text(
+        "# Finance\n\n## Confirmed Financial Facts\n\n"
+        "| SCHD shares | 1,175.808 |\n| FXAIX shares | 59.421 |\n"
+        "| SGOV shares | 69.156 |\n| SPCX shares | 10 |\n\n"
+        "## Unverified or Unresolved\n\n- Whether SHLD and FZROX are still held.",
+        encoding="utf-8",
+    )
+    fetched = []
+    captured = {}
+
+    def fake_fetch(symbol):
+        fetched.append(symbol)
+        return {"symbol": symbol, "price": 100.0}
+
+    def fake_chat_with_tools(system, user, specs, dispatch, **kwargs):
+        captured["system"] = system
+        captured["specs"] = specs
+        return "grounded", []
+
+    monkeypatch.setattr(config, "FINANCE_PATH", finance_path)
+    monkeypatch.setattr(config, "INTUITION_ENABLED", False)
+    monkeypatch.setattr(market, "_fetch_chart_quote", fake_fetch)
+    monkeypatch.setattr(pipeline, "web_context_for", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
+    monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+
+    result = pipeline.answer("lets do a portfolio analysis", [])
+    names = {spec["function"]["name"] for spec in captured["specs"]}
+
+    assert fetched == ["SCHD", "FXAIX", "SGOV", "SPCX"]
+    assert result["live_data"]["quotes"]
+    assert "SCHD" in captured["system"]
+    assert "get_stock_quotes" not in names
+
+
+def test_finance_quote_context_excludes_unresolved_symbols(monkeypatch, tmp_path):
+    finance_path = tmp_path / "finance.md"
+    finance_path.write_text(
+        "# Finance\n\n## Confirmed Financial Facts\n\n| SCHD shares | 12 |\n\n"
+        "## Unverified or Unresolved\n\n- Whether SHLD and FZROX are still held.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "FINANCE_PATH", finance_path)
+
+    text = pipeline._trusted_finance_text_for_quotes("portfolio analysis")
+    tickers = market.tickers_from_memories([], trusted_portfolio_text=text)
+
+    assert tickers == ["SCHD"]
+
+
+def test_market_context_preserves_provider_errors_for_trusted_portfolio(monkeypatch):
+    monkeypatch.setattr(
+        market,
+        "fetch_quotes",
+        lambda symbols: {
+            "provider": "test",
+            "quotes": [],
+            "errors": [{"symbols": symbols, "error": "network unavailable"}],
+        },
+    )
+
+    result = market.market_context_for(
+        "portfolio analysis",
+        trusted_portfolio_text="| SCHD shares | 12 |",
+    )
+
+    assert result["errors"][0]["error"] == "network unavailable"
+    assert result["source"] == "portfolio tickers resolved from trusted finance calibration"
