@@ -1708,7 +1708,7 @@ def approve_pending_action(req: PendingActionDecisionReq):
             detail=f"Approval failed safely: {type(exc).__name__}: {exc}",
         ) from exc
     if result.get("error"):
-        if result.get("error_kind") == "stale_preview":
+        if result.get("error_kind") in {"stale_preview", "preview_truncated"}:
             raise HTTPException(status_code=409, detail=result)
         raise HTTPException(status_code=404, detail=result["error"])
     return result

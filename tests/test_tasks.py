@@ -207,6 +207,31 @@ def test_web_search_first_with_prompt_derived_query_is_allowed(monkeypatch):
     assert done["tools_used"] == ["web_search"]
 
 
+def test_failed_tool_does_not_disable_background_web_search(monkeypatch):
+    from brain import websearch
+
+    searched = []
+    monkeypatch.setattr(
+        websearch,
+        "search_web",
+        lambda q: searched.append(q) or {"query": q, "results": []},
+    )
+    tasks.enqueue("Research Example City weather.")
+
+    def fake_loop(system, user, specs, dispatch, **kwargs):
+        failed = dispatch("execute_python_code", {"script": "import requests"})
+        assert failed.get("error")
+        result = dispatch("web_search", {"query": "Example City weather"})
+        assert not result.get("error")
+        return "done", [{"tool": "web_search"}]
+
+    monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
+
+    done = tasks.run_one()
+    assert done["status"] == "done"
+    assert searched == ["Example City weather"]
+
+
 def test_interrupted_claim_requeues_once_then_fails(monkeypatch):
     """A runner that dies after claiming leaves the task 'running' with no one
     to finish it. The claim is a lease: on expiry the task is re-queued for one

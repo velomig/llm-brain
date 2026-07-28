@@ -265,7 +265,7 @@ def _execute(prompt: str, model: str | None) -> dict:
     # Same web_search guards as the interactive chat loop
     # (pipeline._single_pass_answer): the query must be derived from the
     # user-authored task prompt, at most one search runs per task, and no search
-    # may run after another tool result has entered the turn. Without these, a
+    # may run after another successful tool result has entered the turn. Without these, a
     # prompt-injected file can drive read_file -> web_search(<file contents>)
     # and exfiltrate private text through the search provider's query log.
     from brain import pipeline
@@ -307,15 +307,17 @@ def _execute(prompt: str, model: str | None) -> dict:
             if refusal:
                 return {"error": refusal}
         result = tools.dispatch(name, args, taint=list(turn_taint))
-        tool_results_seen += 1
-        if name in pipeline._UNTRUSTED_READ_TOOLS and not (isinstance(result, dict) and result.get("error")):
+        succeeded = not (isinstance(result, dict) and result.get("error"))
+        if succeeded:
+            tool_results_seen += 1
+        if name in pipeline._UNTRUSTED_READ_TOOLS and succeeded:
             if name not in turn_taint:
                 turn_taint.append(name)
         if isinstance(result, dict) and result.get("pending"):
             action = result.get("action") or {}
             if action.get("id"):
                 pending_ids.append(action["id"])
-        elif not (isinstance(result, dict) and result.get("error")):
+        elif succeeded:
             used_names.append(name)
         return result
 
