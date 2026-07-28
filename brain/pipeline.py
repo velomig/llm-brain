@@ -41,8 +41,8 @@ lighthouse.pdf." Name the source file when a memory has one; otherwise refer to
 the kind of memory and its date. Cite only memories you genuinely relied on, and
 never invent a source, file name, or date that isn't in the memory's fields.
 
-Proactive Reminders below are the user's own dated commitments. If one is due or
-overdue and relevant to the conversation, raise it naturally; otherwise ignore it.
+Proactive Reminders below are the user's own current or upcoming dated commitments.
+If one is due and relevant to the conversation, raise it naturally; otherwise ignore it.
 
 Initiative Candidates below are optional soft follow-ups/open loops. Use restraint:
 mention at most one only when it fits the user's current context, and phrase it as
@@ -1376,7 +1376,8 @@ def _tools_note_for(tool_specs: list[dict] | None = None) -> str:
             "limited to news, politics, products, travel, technical information, and current facts. Build the query "
             "around the user's actual subject, never a filler word from their sentence. If the user asks for an "
             "independent analysis or says to ignore memory or Source of Truth, keep the search query literal to the "
-            "subject they typed; do not expand it with names or facts from private context. "
+            "subject they typed; do not expand it with names or facts from private context. For weather, forecasts, "
+            "or other current public information, call web_search directly before trying local or Python tools. "
         )
     if "get_stock_quotes" in names:
         note += (
@@ -1684,9 +1685,15 @@ def _single_pass_answer(
             if refusal:
                 return {"error": refusal}
         result = tools.dispatch(tool_name, args, taint=list(turn_taint))
-        if tool_name in _UNTRUSTED_READ_TOOLS and not result.get("error"):
+        succeeded = not (isinstance(result, dict) and result.get("error"))
+        if tool_name in _UNTRUSTED_READ_TOOLS and succeeded:
             _add_taint(tool_name)
-        tool_results_seen += 1
+        # A rejected/failed tool call contributes no retrieved content that
+        # could be exfiltrated through a later search. Counting it here made a
+        # harmless sandbox error (for example, Python rejecting ``import``)
+        # permanently disable web search for the rest of the turn.
+        if succeeded:
+            tool_results_seen += 1
         return result
 
     if guard_web:

@@ -1007,6 +1007,35 @@ def test_web_search_tool_rejects_after_prior_tool_result(monkeypatch):
     assert "after another tool result" in captured["search"]["error"]
 
 
+def test_failed_python_tool_does_not_disable_weather_search(monkeypatch):
+    captured = {}
+
+    def fake_chat_with_tools(system, user, specs, dispatch, **kwargs):
+        captured["python"] = dispatch(
+            "execute_python_code",
+            {"script": "import requests\nprint(requests.get('https://example.com'))"},
+        )
+        captured["search"] = dispatch("web_search", {"query": "Sierra Vista weather forecast"})
+        return "ok", []
+
+    monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
+    monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+    monkeypatch.setattr(pipeline, "web_context_for", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pipeline.tools,
+        "dispatch",
+        lambda name, args, **kwargs: (
+            {"error": "unsupported syntax: Import"}
+            if name == "execute_python_code"
+            else {"query": args["query"], "results": [], "errors": []}
+        ),
+    )
+
+    pipeline.answer("Sierra Vista weather forecast", [])
+    assert "unsupported syntax" in captured["python"]["error"]
+    assert "error" not in captured["search"]
+
+
 # --- eager web search: the raw prompt must not leave the box wholesale ----------
 
 def _forbid_search(monkeypatch):

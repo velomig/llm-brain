@@ -301,9 +301,10 @@ def reflect(model: str | None = None) -> dict:
 
 
 def active_reminders(model: str | None = None, horizon_days: int | None = None) -> list[dict]:
-    """Open reminders due on/before today+horizon (cheap; no LLM). Sorted by due date."""
+    """Open reminders due today through today+horizon (cheap; no LLM)."""
     horizon = config.REMINDER_HORIZON_DAYS if horizon_days is None else horizon_days
-    cutoff = date.today() + timedelta(days=horizon)
+    today = date.today()
+    cutoff = today + timedelta(days=horizon)
     out = []
     # Reminders may live in either collection — text_only is the fallback when
     # embeddings are unavailable (see _store) — so read both, like _fact_corpus.
@@ -326,8 +327,12 @@ def active_reminders(model: str | None = None, horizon_days: int | None = None) 
             # the record itself stays in the store (visible in the manager).
             if due is None:
                 continue
-            if due > cutoff:
+            # The proactive banner is an upcoming-event surface, not an
+            # unfinished-task backlog. Once its calendar date has passed, keep
+            # the reminder record available to list/manage but stop injecting
+            # it into prompts and the persistent GUI banner.
+            if due < today or due > cutoff:
                 continue
-            out.append({"due": meta.get("due"), "text": text, "overdue": due < date.today()})
+            out.append({"due": meta.get("due"), "text": text, "overdue": False})
     out.sort(key=lambda r: (r["due"] or "9999"))
     return out

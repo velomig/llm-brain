@@ -577,6 +577,36 @@ def test_pending_file_write_requires_reapproval_when_preview_goes_stale(tmp_path
     assert path.read_text(encoding="utf-8") == "approved\n"
 
 
+def test_pending_approval_refused_when_preview_truncated(tmp_path, monkeypatch):
+    # The Actions-panel review is the gate that catches injection-influenced
+    # actions, so an action whose preview could not show the full change must
+    # not be approvable — the reviewer would be blessing content they never saw.
+    from brain.toolkit import governance
+
+    monkeypatch.setattr(config, "TOOL_ALLOWED_ROOTS", [tmp_path])
+    path = tmp_path / "big.txt"
+
+    # A normal write is shown in full and stays one-click approvable.
+    ok = tools.dispatch("write_file", {"filename": str(path), "content": "hello\n"})
+    assert ok["action"]["preview"]["preview_truncated"] is False
+    assert tools.approve_pending(ok["action"]["id"])["result"]["ok"] is True
+    assert path.read_text(encoding="utf-8") == "hello\n"
+
+    # Force the diff past what the preview can display: the flag is set and
+    # approval refuses, leaving the file untouched and the action still pending.
+    monkeypatch.setattr(governance, "_DIFF_PREVIEW_CHARS", 8)
+    queued = tools.dispatch(
+        "write_file",
+        {"filename": str(path), "content": "goodbye everyone\n", "mode": "overwrite"},
+    )
+    assert queued["action"]["preview"]["preview_truncated"] is True
+
+    refused = tools.approve_pending(queued["action"]["id"])
+    assert refused["error_kind"] == "preview_truncated"
+    assert refused["action"]["status"] == "pending"
+    assert path.read_text(encoding="utf-8") == "hello\n"
+
+
 def test_pending_memory_edit_requires_reapproval_when_target_changes():
     # A pending memory edit must not silently overwrite a value that changed
     # after the preview was reviewed.

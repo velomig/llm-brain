@@ -162,6 +162,39 @@ def _snippet(text: str | None, limit: int = 1000) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+# Preview ceiling for change-DEFINING fields (a file diff, an email body, an
+# action-package body, a lesson) — the text that describes exactly what an
+# approval will write or send. These are sized to the handler's own maximum so
+# an in-limit payload is always shown IN FULL, closing the gap where an
+# injection-crafted action could hide its real content past a small preview cap
+# that the Actions-panel reviewer never scrolls to. A field that still overflows
+# (e.g. a diff against a very large existing file) is truncated AND recorded, so
+# approve_pending can refuse rather than let a partially-shown action through.
+_DIFF_PREVIEW_CHARS = max(6000, config.MAX_TOOL_WRITE_CHARS * 2 + 8192)
+_LESSON_PREVIEW_CHARS = 4000
+
+# Truncation is recorded per-thread for the duration of one preview_action call
+# (previews are pure and short-lived; a thread-local keeps the many return
+# branches from each having to thread an accumulator through by hand).
+_preview_truncation = threading.local()
+
+
+def _clip_content(text: str | None, limit: int) -> str:
+    """Snippet a change-defining field, recording when it had to truncate.
+
+    Unlike _snippet (used for advisory fields like a reason or note, where a cut
+    is cosmetic), a cut here means the reviewer cannot see the full thing the
+    approval would write or send — which the truncation flag turns into a
+    refusal at approval time."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    hits = getattr(_preview_truncation, "hits", None)
+    if hits is not None:
+        hits.append(True)
+    return text[:limit] + "..."
+
+
 def _file_text(path: Path) -> str | None:
     try:
         raw = path.read_bytes()
@@ -261,6 +294,20 @@ def _restore_json_file_snapshot(snapshot: dict) -> dict:
 
 
 def preview_action(tool: str, args: dict | None = None) -> dict:
+    """Build the reviewer-facing preview, stamping preview_truncated when any
+    change-defining field could not be shown in full (see _clip_content)."""
+    _preview_truncation.hits = []
+    try:
+        preview = _preview_action(tool, args)
+    finally:
+        truncated = bool(getattr(_preview_truncation, "hits", None))
+        _preview_truncation.hits = None
+    if isinstance(preview, dict):
+        preview.setdefault("preview_truncated", truncated)
+    return preview
+
+
+def _preview_action(tool: str, args: dict | None = None) -> dict:
     args = args or {}
     try:
         if tool == "write_file":
@@ -292,7 +339,7 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                         n=3,
                     )
                 )
-            return {"kind": "file_write", "path": str(path), "mode": mode, "chars": len(content), "diff": _snippet(diff, 6000)}
+            return {"kind": "file_write", "path": str(path), "mode": mode, "chars": len(content), "diff": _clip_content(diff, _DIFF_PREVIEW_CHARS)}
         if tool == "update_source_of_truth":
             path = source_truth.target_path(args)
             target = str(args.get("target") or "source_of_truth").strip().lower()
@@ -324,7 +371,7 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                 "match_kind": match_kind,
                 "old_chars": len(old_text),
                 "new_chars": len(new_text),
-                "diff": _snippet(diff, 6000),
+                "diff": _clip_content(diff, _DIFF_PREVIEW_CHARS),
             }
         if tool == "update_will_perspective":
             path = config.WILL_PERSPECTIVE_PATH.resolve(strict=False)
@@ -355,7 +402,7 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                 "old_chars": len(old_text),
                 "new_chars": len(new_text),
                 "reason": _snippet(str(args.get("reason") or ""), 600),
-                "diff": _snippet(diff, 6000),
+                "diff": _clip_content(diff, _DIFF_PREVIEW_CHARS),
                 "identity_level": True,
             }
         if tool == "send_email":
@@ -363,14 +410,14 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
                 "kind": "email",
                 "recipient": args.get("recipient"),
                 "subject": args.get("subject"),
-                "body": _snippet(str(args.get("body") or ""), 4000),
+                "body": _clip_content(str(args.get("body") or ""), config.MAX_EMAIL_BODY_CHARS),
                 "will_send": bool(config.EMAIL_SEND_ENABLED),
             }
         if tool == "review_action_package":
             return {
                 "kind": "action_package",
                 "title": _snippet(str(args.get("title") or "Action Package"), 300),
-                "body": _snippet(str(args.get("body") or ""), 8000),
+                "body": _clip_content(str(args.get("body") or ""), config.MAX_MEMORY_CHARS),
                 "source_initiative_id": args.get("source_initiative_id"),
                 "priority": args.get("priority"),
                 "will_execute_external_action": False,
@@ -378,7 +425,7 @@ def preview_action(tool: str, args: dict | None = None) -> dict:
         if tool == "record_lesson":
             return {
                 "kind": "lesson_record",
-                "text": _snippet(str(args.get("text") or ""), 600),
+                "text": _clip_content(str(args.get("text") or ""), _LESSON_PREVIEW_CHARS),
                 "source": args.get("source"),
                 "note": "Approval commits this as a standing lesson in the self-model prompt.",
             }
@@ -538,6 +585,14 @@ def refresh_if_stale(action: dict) -> dict | None:
         "stale_preview": True,
         "stale_at": now_iso(),
     }
+
+
+def preview_truncated(action: dict) -> bool:
+    """True when the reviewed preview could not show a change-defining field in
+    full. Approval refuses such actions: the Actions-panel review is the gate
+    that catches injection-influenced actions, and it only holds if the reviewer
+    actually saw the whole thing that would be written or sent."""
+    return bool((action.get("preview") or {}).get("preview_truncated"))
 
 
 def undo_action(action: dict) -> dict:

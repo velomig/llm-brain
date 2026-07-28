@@ -80,16 +80,15 @@ def test_eval_what_reminders_are_due():
         )
 
     _reminder("Execute the $250 SPCX limit sell.", days=3)        # due soon
-    _reminder("Renew the domain registration.", days=-2)          # overdue
+    _reminder("Renew the domain registration.", days=-2)          # expired
     _reminder("File the annual tax return.", days=120)            # beyond the horizon
 
     due = active_reminders()
     by_text = {r["text"]: r for r in due}
 
     assert "Execute the $250 SPCX limit sell." in by_text         # within horizon
-    assert "Renew the domain registration." in by_text            # overdue still surfaces
+    assert "Renew the domain registration." not in by_text        # passed date is suppressed
     assert "File the annual tax return." not in by_text           # too far out, suppressed
-    assert by_text["Renew the domain registration."]["overdue"] is True
 
 
 # --- "What did I decide about X?" ---------------------------------------------
