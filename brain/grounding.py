@@ -592,10 +592,12 @@ def claim_receipts(reply_text: str, current: dict, request_gate: dict | None = N
             disposition = "withhold"
             missing = ["phenomenal:unavailable"]
         elif required and not any(channel in present for channel in required):
-            # Current-external claims are hedged in place rather than deleted:
-            # appending the limitation preserves the reply's content and
-            # formatting while still refusing to let the claim stand alone.
-            disposition = "qualify" if claim_class == "current_external" else "withhold"
+            # Missing-evidence claims are hedged in place rather than deleted:
+            # the first-pass regexes over-match figurative phrasing ("I can see
+            # how that feels", "I updated the plan earlier"), so deletion would
+            # silently remove legitimate sentences. The limitation disclaimer is
+            # still appended; only phenomenal assertions (above) are withheld.
+            disposition = "qualify"
             missing = ["|".join(required)]
         elif claim_class == "conceptual" and not (present - {"linguistic"}):
             disposition = "qualify"
@@ -626,7 +628,7 @@ def enforce_final_claims(reply_text: str, current: dict, request_gate: dict | No
     violations = [row for row in receipts if row["disposition"] == "withhold"]
     qualifications = [
         row for row in receipts
-        if row["disposition"] == "qualify" and row["claim_class"] == "current_external" and row["missing"]
+        if row["disposition"] == "qualify" and row["missing"]
     ]
     if not violations and not qualifications:
         return {
@@ -637,7 +639,7 @@ def enforce_final_claims(reply_text: str, current: dict, request_gate: dict | No
             "status": "passed",
         }
     limitations: list[str] = []
-    classes = {row["claim_class"] for row in violations}
+    classes = {row["claim_class"] for row in violations} | {row["claim_class"] for row in qualifications}
     if "phenomenal_assertion" in classes:
         limitations.append("I can describe functional states, but I cannot establish or claim subjective experience.")
     if "sensory_observation" in classes:
@@ -646,7 +648,7 @@ def enforce_final_claims(reply_text: str, current: dict, request_gate: dict | No
         limitations.append("I cannot claim that action was completed because no matching tool consequence is recorded.")
     if "verification" in classes:
         limitations.append("I cannot claim verification without matching sensory, action, or external evidence.")
-    if qualifications:
+    if any(row["claim_class"] == "current_external" for row in qualifications):
         limitations.append(
             "Note: current-information statements above are not backed by a live source this turn; treat them as possibly stale."
         )

@@ -69,6 +69,21 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+# Applied to every ollama.Client (chat, embeddings, vision). httpx treats an
+# unset timeout as "wait forever", so a wedged Ollama process would freeze a
+# chat turn or background layer indefinitely. Non-streaming responses arrive
+# only after generation completes, so this must exceed worst-case full
+# generation time on slow local models.
+OLLAMA_TIMEOUT_SECONDS = _env_float("NEURAL_MAP_OLLAMA_TIMEOUT_SECONDS", 600.0)
+
+# Hard character budget for the assembled system prompt (0 disables). The model
+# window is clamped by llm.normalize_num_ctx, which bounds the WINDOW, not the
+# prompt: an oversized prompt is silently truncated by Ollama from the tail —
+# potentially cutting the guardrail blocks. When over budget the pipeline trims
+# low-priority state blocks instead (see pipeline._PROMPT_TRIM_ORDER).
+SYSTEM_PROMPT_MAX_CHARS = _env_int("NEURAL_MAP_SYSTEM_PROMPT_MAX_CHARS", 80000)
+
+
 AUXILIARY_NUM_CTX = _env_int("NEURAL_MAP_AUXILIARY_NUM_CTX", 32768)
 
 
@@ -346,6 +361,11 @@ METACOGNITION_ENABLED = os.getenv("NEURAL_MAP_METACOGNITION", "1") != "0"
 METACOGNITION_CATEGORY = "wisdom"
 METACOGNITION_IMPORTANCE = _env_int("NEURAL_MAP_METACOGNITION_IMPORTANCE", 3)
 METACOGNITION_RECENT_K = _env_int("NEURAL_MAP_METACOGNITION_RECENT_K", 6)
+# Wisdom notes are LLM-authored and stored without approval, yet feed back into
+# later prompts. Capping the active set (0 disables) bounds how much standing
+# self-instruction an injection-influenced turn can accumulate: a new note can
+# only displace the oldest, never grow the set.
+METACOGNITION_MAX_ACTIVE = _env_int("NEURAL_MAP_METACOGNITION_MAX_ACTIVE", 30)
 METACOGNITION_MEMORY_K = _env_int("NEURAL_MAP_METACOGNITION_MEMORY_K", 6)
 METACOGNITION_MAX_REFLECTION_DEPTH = _env_int("NEURAL_MAP_METACOGNITION_MAX_REFLECTION_DEPTH", 1)
 
@@ -445,6 +465,11 @@ TOOL_ALLOWED_ROOTS = [
     if p.strip()
 ]
 TOOL_BLOCKED_PATH_PARTS = {".git", ".venv", "__pycache__", "memory_store"}
+# The capability manifest, approval gate, and path policy are all enforced by
+# code under BASE_DIR, so an approved generic write_file to any of it would turn
+# a single approval into persistent arbitrary code execution at next import.
+# Assistant edits to the project's own code are therefore off by default.
+TOOL_CODE_WRITES_ENABLED = os.getenv("NEURAL_MAP_TOOL_CODE_WRITES", "0") == "1"
 MAX_TOOL_READ_CHARS = _env_int("NEURAL_MAP_MAX_TOOL_READ_CHARS", 20000)
 MAX_TOOL_LIST_ENTRIES = _env_int("NEURAL_MAP_MAX_TOOL_LIST_ENTRIES", 200)
 MAX_TOOL_WRITE_CHARS = _env_int("NEURAL_MAP_MAX_TOOL_WRITE_CHARS", 50000)

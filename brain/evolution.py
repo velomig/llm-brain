@@ -137,7 +137,24 @@ def _read_state_unlocked() -> dict:
     return base
 
 
+_MAX_PROPOSALS = 100
+
+
 def _write_state_unlocked(state: dict) -> None:
+    proposals = state.get("proposals")
+    if isinstance(proposals, list) and len(proposals) > _MAX_PROPOSALS:
+        # state() parses this whole file under a flock on every retrieval
+        # hyperparameter lookup, so unbounded proposal growth is a per-turn
+        # tax. Drop the oldest resolved proposals first (snapshots are already
+        # trimmed to 50 the same way); pending ones are never dropped.
+        excess = len(proposals) - _MAX_PROPOSALS
+        trimmed = []
+        for proposal in proposals:
+            if excess > 0 and isinstance(proposal, dict) and proposal.get("status") != "pending":
+                excess -= 1
+                continue
+            trimmed.append(proposal)
+        state["proposals"] = trimmed
     _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = _STATE_FILE.with_name(f"{_STATE_FILE.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

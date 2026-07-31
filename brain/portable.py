@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 import config
-from brain import graph, store
+from brain import graph, log, store
 from brain.embeddings import EmbeddingUnavailable, embed_documents, text_only_embedding
 from brain.memory import SCHEMA_VERSION, MemoryUnit, now_iso
 
@@ -218,25 +218,32 @@ def import_data(data: dict, model: str | None = None, replace: bool = False) -> 
     if replace:
         rollback = _snapshot_all(model)
         rollback_edges = _snapshot_replace_edges(model)
-        store.clear_all(model)
-        graph.clear_collections(_replace_graph_collections(model), include_legacy=True)
     elif units:
         rollback = _snapshot_existing(imported_ids, model=model)
         rollback_edges = _snapshot_merge_edges(imported_ids, model)
-        # Merge: drop any existing copy (in either store) so ids don't collide and
-        # a memory never ends up duplicated across the vector/text-only stores.
-        # Embeddings are prepared BEFORE this destructive step, so a hard embed
-        # failure cannot delete the user's existing records. Existing rows are
-        # snapshotted too, so a Chroma write failure after this point can roll back
-        # to the pre-import state.
-        store.delete_all([u.id for u in units], model=model)
-        # An overwritten memory's old edges describe its old text; keeping them
-        # alongside the imported ones would leave both associations pointing at
-        # the updated record. Replace them wholesale (the snapshot above brings
-        # them back on rollback).
-        graph.delete_fact_ids(list(imported_ids), collections=store.graph_collection_names(model))
 
+    # Every destructive call sits inside this try: once the snapshots above
+    # exist, ANY failure — including one from the clears/deletes themselves
+    # (e.g. a SQLite lock from a concurrent job) — must reach the rollback
+    # handler, or a half-finished restore permanently wipes the store while the
+    # snapshot sits unused in memory.
     try:
+        if replace:
+            store.clear_all(model)
+            graph.clear_collections(_replace_graph_collections(model), include_legacy=True)
+        elif units:
+            # Merge: drop any existing copy (in either store) so ids don't collide and
+            # a memory never ends up duplicated across the vector/text-only stores.
+            # Embeddings are prepared BEFORE this destructive step, so a hard embed
+            # failure cannot delete the user's existing records. Existing rows are
+            # snapshotted too, so a Chroma write failure after this point can roll back
+            # to the pre-import state.
+            store.delete_all([u.id for u in units], model=model)
+            # An overwritten memory's old edges describe its old text; keeping them
+            # alongside the imported ones would leave both associations pointing at
+            # the updated record. Replace them wholesale (the snapshot above brings
+            # them back on rollback).
+            graph.delete_fact_ids(list(imported_ids), collections=store.graph_collection_names(model))
         if units:
             store.add_many(units, embeddings, model=model, text_only=text_only)
         # The memories were just re-embedded into THIS store, so their facts now live in
@@ -252,20 +259,27 @@ def import_data(data: dict, model: str | None = None, replace: bool = False) -> 
         ]
         edges = graph.import_edges(edge_rows)
     except Exception:
+        # Best-effort rollback: the cleanup clears here often hit the SAME
+        # lock/IO error that aborted the import, and a raise from any one step
+        # must not prevent the later steps — above all the snapshot restore —
+        # from being attempted. The original exception is always re-raised.
+        def _attempt(phase: str, step) -> None:
+            try:
+                step()
+            except Exception as exc:
+                log.fallback("portable_rollback_step_failed", exc, phase=phase)
+
         if replace:
-            store.clear_all(model)
-            graph.clear_collections(_replace_graph_collections(model), include_legacy=True)
-            if rollback is not None:
-                _restore_snapshot(rollback, model=model)
-            graph.import_edges(rollback_edges)
+            _attempt("clear_store", lambda: store.clear_all(model))
+            _attempt("clear_edges", lambda: graph.clear_collections(_replace_graph_collections(model), include_legacy=True))
         else:
-            store.delete_all(list(imported_ids), model=model)
             # Clear whatever landed for the imported ids (including any edges
             # import_edges wrote before failing), then put back the snapshots.
-            graph.delete_fact_ids(list(imported_ids), collections=store.graph_collection_names(model))
-            if rollback is not None:
-                _restore_snapshot(rollback, model=model)
-            graph.import_edges(rollback_edges)
+            _attempt("delete_imported", lambda: store.delete_all(list(imported_ids), model=model))
+            _attempt("delete_imported_edges", lambda: graph.delete_fact_ids(list(imported_ids), collections=store.graph_collection_names(model)))
+        if rollback is not None:
+            _attempt("restore_snapshot", lambda: _restore_snapshot(rollback, model=model))
+        _attempt("restore_edges", lambda: graph.import_edges(rollback_edges))
         raise
     return {"memories": len(units), "edges": edges, "mode": "text_only" if text_only else "vector"}
 
