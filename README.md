@@ -373,15 +373,27 @@ at an Obsidian vault ingests only real notes — `.obsidian/` config, the
 
 `launchd/com.neuralmap.vaultwatch.plist` keeps
 `ingest_md.py "<vault>" --watch --interval 60` running permanently, so notes
-written in Obsidian flow into memory within a minute of saving. Install it the
-same way as the server agent (`/Library/LaunchAgents`, because the home
-directory lives on a no-owners external volume):
+written in Obsidian flow into memory within a minute of saving. The plist uses
+the stable `/Users/<account>/Documents/LLM Brain` path; that path may be a
+symlink to an external-volume workspace. Install it the same way as the server
+agent in `/Library/LaunchAgents`:
 
 ```bash
 sudo cp launchd/com.neuralmap.vaultwatch.plist /Library/LaunchAgents/
 sudo chown root:wheel /Library/LaunchAgents/com.neuralmap.vaultwatch.plist
 launchctl bootstrap gui/$(id -u) /Library/LaunchAgents/com.neuralmap.vaultwatch.plist
 ```
+
+Check both LaunchAgents and the authenticated API without exposing the server
+token:
+
+```bash
+./neural_map_status.sh
+```
+
+Use the current `state` and `pid` reported by this check. `launchctl print` may
+retain an older `last exit code` after a later successful restart, so that field
+alone does not establish a current outage.
 
 The watcher deliberately omits `--delete-removed`: deleting a note in Obsidian
 leaves its memories intact (remove them from the Manage panel if wanted), so a

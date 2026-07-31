@@ -83,6 +83,29 @@ def _memory_snapshot(mems: list[dict] | None) -> list[dict]:
     return out
 
 
+def _cap_active_notes(model: str | None) -> None:
+    """Supersede the oldest wisdom notes beyond METACOGNITION_MAX_ACTIVE.
+
+    Unlike record_lesson, these notes commit without user approval, so the
+    active set must stay bounded: a poisoned turn can then only displace the
+    oldest note, never accumulate an unbounded set of standing rules."""
+    cap = config.METACOGNITION_MAX_ACTIVE
+    if cap <= 0:
+        return
+    rows = [
+        rec
+        for rec in store.list_records_all(model)
+        if (rec.get("meta") or {}).get("category") == config.METACOGNITION_CATEGORY
+        and not (rec.get("meta") or {}).get("superseded")
+    ]
+    if len(rows) <= cap:
+        return
+    rows.sort(key=lambda r: ((r.get("meta") or {}).get("date") or "", r.get("id") or ""), reverse=True)
+    stale = [r.get("id") for r in rows[cap:] if r.get("id")]
+    if stale:
+        store.mark_superseded_all(stale, model=model)
+
+
 def _store_note(text: str, bias: str, confidence: float, model: str | None = None) -> str:
     unit = MemoryUnit(
         text=text,
@@ -92,12 +115,16 @@ def _store_note(text: str, bias: str, confidence: float, model: str | None = Non
             "source_type": "generated_metacognition",
             "bias": bias[:80] if bias else "unspecified",
             "confidence": float(max(0.0, min(1.0, confidence))),
+            # Self-authored without user approval; flagged so review surfaces
+            # can distinguish these from user-vetted lessons.
+            "unreviewed": True,
         },
     )
     try:
         store.add(unit, embed_document(unit.text, model=model), model=model)
     except EmbeddingUnavailable:
         store.add(unit, text_only_embedding(), model=model, text_only=True)
+    _cap_active_notes(model)
     return unit.id
 
 

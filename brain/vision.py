@@ -15,7 +15,7 @@ import ollama
 
 import config
 
-_client = ollama.Client(host=config.OLLAMA_HOST)
+_client = ollama.Client(host=config.OLLAMA_HOST, timeout=config.OLLAMA_TIMEOUT_SECONDS)
 
 
 class VisionUnavailable(RuntimeError):

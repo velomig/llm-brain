@@ -6,6 +6,7 @@ from pathlib import Path
 import config
 from brain import sensory
 from brain.toolkit.paths import (
+    reserved_code_path,
     resolve_tool_path,
     skip_search_path,
     trusted_prompt_path,
@@ -39,7 +40,7 @@ def list_files(args: dict) -> dict:
             return {"path": str(directory), "error": "path is not a directory"}
         rows = []
         for child in sorted(directory.iterdir(), key=lambda p: p.name.lower()):
-            if child.name in config.TOOL_BLOCKED_PATH_PARTS:
+            if child.name in config.TOOL_BLOCKED_PATH_PARTS or child.name.startswith("."):
                 continue
             row = {"name": child.name, "path": str(child), "type": "unknown", "size": None}
             try:
@@ -93,6 +94,12 @@ def write_file(args: dict) -> dict:
                 "path": str(path),
                 "error": "this file is injected into the system prompt as trusted and is "
                 f"reserved from write_file; {hint} or edit it directly",
+            }
+        if reserved_code_path(path):
+            return {
+                "path": str(path),
+                "error": "this path is part of the project's own code and is reserved "
+                "from write_file; edit it directly (or set NEURAL_MAP_TOOL_CODE_WRITES=1)",
             }
         if mode not in {"create", "overwrite", "append"}:
             return {"path": str(path), "error": "mode must be create, overwrite, or append"}

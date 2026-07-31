@@ -803,13 +803,13 @@ function formatTraceMetrics(trace) {
 
 function compactToolResult(call) {
   const result = call.result || {};
+  if (result.error) return `${call.tool}: ${result.error}`;
   if (call.tool === 'web_search') {
     const count = (result.results || []).length;
     const provider = result.provider || 'web';
     const errors = (result.errors || []).map(e => e.error || JSON.stringify(e)).filter(Boolean);
     return `${call.tool}: ${count} result(s) from ${provider}${errors.length ? ` · warning ${errors.join('; ')}` : ''}`;
   }
-  if (result.error) return `${call.tool}: ${result.error}`;
   if (result.pending && result.action) return `${call.tool}: pending approval ${result.action.id}`;
   return `${call.tool}: ok`;
 }
@@ -2255,11 +2255,15 @@ async function send(message, options = {}) {
     const webTool = toolResults.find(call => call.tool === 'web_search' && call.result);
     if (webTool && webTool.result) {
       const webResult = webTool.result;
-      const count = (webResult.results || []).length;
-      const provider = webResult.provider || 'provider';
-      const warnings = (webResult.errors || []).map(e => e.error || JSON.stringify(e)).filter(Boolean);
-      $('#recalled').prepend(el('p', count ? 'toolnote' : 'empty', `Web search: ${count} result(s) from ${provider}.`));
-      if (warnings.length) $('#recalled').prepend(el('p', 'empty', 'Web search warning: ' + warnings.join('; ')));
+      if (webResult.error) {
+        $('#recalled').prepend(el('p', 'empty', `Web search failed: ${webResult.error}`));
+      } else {
+        const count = (webResult.results || []).length;
+        const provider = webResult.provider || 'provider';
+        const warnings = (webResult.errors || []).map(e => e.error || JSON.stringify(e)).filter(Boolean);
+        $('#recalled').prepend(el('p', count ? 'toolnote' : 'empty', `Web search: ${count} result(s) from ${provider}.`));
+        if (warnings.length) $('#recalled').prepend(el('p', 'empty', 'Web search warning: ' + warnings.join('; ')));
+      }
     }
     if (res.count != null) setStats(res.count);
     if (res.pending_decision) loadPendingActions().catch(() => {});
@@ -2553,3 +2557,7 @@ $('#ctx').value = savedCtx && savedCtx !== 4096 ? Math.min(savedCtx, 262144) : 2
 $('#initiativeMode').value = localStorage.getItem('nm_initiative_mode') || 'helpful';
 restoreChatState();
 loadModels(); loadStats(); loadRetrievalDefaults(); loadReminders(); loadInitiatives(); loadAwareness(); loadPendingActions().catch(() => {});
+// The app is often left open overnight. Refresh the cheap, no-LLM reminder
+// endpoint so yesterday's event disappears without requiring a chat turn or a
+// full page reload.
+setInterval(loadReminders, 60_000);

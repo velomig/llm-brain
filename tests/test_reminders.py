@@ -47,12 +47,10 @@ def test_due_within_horizon_is_shown():
     assert len(active_reminders()) == 1
 
 
-def test_overdue_reminder_flagged():
+def test_past_reminder_is_not_active():
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     _reminder(yesterday)
-    rems = active_reminders()
-    assert len(rems) == 1
-    assert rems[0]["overdue"] is True
+    assert active_reminders() == []
 
 
 def test_non_open_status_is_skipped():

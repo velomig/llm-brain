@@ -41,8 +41,8 @@ lighthouse.pdf." Name the source file when a memory has one; otherwise refer to
 the kind of memory and its date. Cite only memories you genuinely relied on, and
 never invent a source, file name, or date that isn't in the memory's fields.
 
-Proactive Reminders below are the user's own dated commitments. If one is due or
-overdue and relevant to the conversation, raise it naturally; otherwise ignore it.
+Proactive Reminders below are the user's own current or upcoming dated commitments.
+If one is due and relevant to the conversation, raise it naturally; otherwise ignore it.
 
 Initiative Candidates below are optional soft follow-ups/open loops. Use restraint:
 mention at most one only when it fits the user's current context, and phrase it as
@@ -337,6 +337,30 @@ Memories as evidence for current/news claims when web results are present; they
 are only background conversation context. If the web results are generic,
 off-topic, or incomplete, say that plainly and list what the provided results
 actually show. Cite at least one URL when answering from web results."""
+
+# Blocks eligible for shrinking when the assembled system prompt exceeds
+# config.SYSTEM_PROMPT_MAX_CHARS, lowest priority first. Guardrail-bearing
+# blocks (preamble, tools note, pinned overrides, source of truth, grounding
+# state/gate) are deliberately absent: they must survive intact, which is the
+# point of budgeting here instead of letting Ollama truncate the tail.
+_PROMPT_TRIM_ORDER = (
+    "workspace_state",
+    "awareness_state",
+    "attention_state",
+    "homeostasis",
+    "self_model",
+    "emotion_state",
+    "cognitive_state",
+    "initiatives",
+    "will_perspective",
+    "domain_calibration",
+    "preferences",
+    "reminders",
+    "web_data",
+    "live_data",
+    "memories",
+)
+_PROMPT_TRIM_FLOOR_CHARS = 1500
 
 _SEARCH_GENERIC_TERMS = {
     "about",
@@ -1376,7 +1400,8 @@ def _tools_note_for(tool_specs: list[dict] | None = None) -> str:
             "limited to news, politics, products, travel, technical information, and current facts. Build the query "
             "around the user's actual subject, never a filler word from their sentence. If the user asks for an "
             "independent analysis or says to ignore memory or Source of Truth, keep the search query literal to the "
-            "subject they typed; do not expand it with names or facts from private context. "
+            "subject they typed; do not expand it with names or facts from private context. For weather, forecasts, "
+            "or other current public information, call web_search directly before trying local or Python tools. "
         )
     if "get_stock_quotes" in names:
         note += (
@@ -1509,41 +1534,72 @@ def build_system(
         section_refs=[row.get("id") for row in perspective_application.get("relevant_sections") or []],
         core_obsessions=len(perspective_application.get("core_obsessions") or []),
     )
-    system = blocks["preamble"] + "\n\n" + blocks["note"] + _BODY.format(
-        now=datetime.now().astimezone().strftime("%A, %Y-%m-%d %H:%M %Z"),
-        pinned_overrides=blocks["pinned_overrides"],
-        memories=blocks["memories"],
-        reminders=blocks["reminders"],
-        initiatives=blocks["initiatives"],
-        preferences=blocks["preferences"],
-        source_of_truth=blocks["source_of_truth"],
-        will_perspective=blocks["will_perspective"],
-        domain_calibration=blocks["domain_calibration"],
-        cognitive_state=blocks["cognitive_state"],
-        workspace_state=blocks["workspace_state"],
-        grounding_state=blocks["grounding_state"],
-        grounding_gate=blocks["grounding_gate"],
-        awareness_state=blocks["awareness_state"],
-        attention_state=blocks["attention_state"],
-        self_model=blocks["self_model"],
-        homeostasis=blocks["homeostasis"],
-        emotion_state=blocks["emotion_state"],
-    )
-    if live_data or web_data:
+    if live_data or web_data or not tool_mode:
         blocks["live_data"] = json.dumps(live_data, ensure_ascii=True) if live_data else "(no live market data provided)"
         blocks["web_data"] = json.dumps(web_data, ensure_ascii=True) if web_data else "(no web search data provided)"
-        system += _PROVIDED_DATA_NOTE + _DATA_BLOCKS.format(live_data=blocks["live_data"], web_data=blocks["web_data"])
-        if _web_has_results(web_data):
-            system += _WEB_GROUNDING_NOTE
-    elif not tool_mode:
-        blocks["live_data"] = json.dumps(live_data, ensure_ascii=True) if live_data else "(no live market data provided)"
-        blocks["web_data"] = json.dumps(web_data, ensure_ascii=True) if web_data else "(no web search data provided)"
-        system += _DATA_BLOCKS.format(live_data=blocks["live_data"], web_data=blocks["web_data"])
+    now = datetime.now().astimezone().strftime("%A, %Y-%m-%d %H:%M %Z")
+
+    def _assemble() -> str:
+        system = blocks["preamble"] + "\n\n" + blocks["note"] + _BODY.format(
+            now=now,
+            pinned_overrides=blocks["pinned_overrides"],
+            memories=blocks["memories"],
+            reminders=blocks["reminders"],
+            initiatives=blocks["initiatives"],
+            preferences=blocks["preferences"],
+            source_of_truth=blocks["source_of_truth"],
+            will_perspective=blocks["will_perspective"],
+            domain_calibration=blocks["domain_calibration"],
+            cognitive_state=blocks["cognitive_state"],
+            workspace_state=blocks["workspace_state"],
+            grounding_state=blocks["grounding_state"],
+            grounding_gate=blocks["grounding_gate"],
+            awareness_state=blocks["awareness_state"],
+            attention_state=blocks["attention_state"],
+            self_model=blocks["self_model"],
+            homeostasis=blocks["homeostasis"],
+            emotion_state=blocks["emotion_state"],
+        )
+        if live_data or web_data:
+            system += _PROVIDED_DATA_NOTE + _DATA_BLOCKS.format(live_data=blocks["live_data"], web_data=blocks["web_data"])
+            if _web_has_results(web_data):
+                system += _WEB_GROUNDING_NOTE
+        elif not tool_mode:
+            system += _DATA_BLOCKS.format(live_data=blocks["live_data"], web_data=blocks["web_data"])
+        return system
+
+    system = _assemble()
+    # normalize_num_ctx clamps the WINDOW, not the prompt: anything over the
+    # window is silently dropped by Ollama from the tail, which can cut the very
+    # guardrail blocks this prompt exists to carry. Enforce a total budget here
+    # by shrinking low-priority blocks in a defined order instead.
+    trimmed: list[str] = []
+    budget = config.SYSTEM_PROMPT_MAX_CHARS
+    if budget > 0 and len(system) > budget:
+        for name in _PROMPT_TRIM_ORDER:
+            if len(system) <= budget:
+                break
+            text = blocks.get(name) or ""
+            if len(text) <= _PROMPT_TRIM_FLOOR_CHARS:
+                continue
+            blocks[name] = text[:_PROMPT_TRIM_FLOOR_CHARS] + "\n…(trimmed to fit prompt budget)"
+            trimmed.append(name)
+            system = _assemble()
+        for name in _PROMPT_TRIM_ORDER:
+            if len(system) <= budget:
+                break
+            if not blocks.get(name):
+                continue
+            blocks[name] = "(trimmed: prompt budget exceeded)"
+            if name not in trimmed:
+                trimmed.append(name)
+            system = _assemble()
     observability.event(
         trace,
         "prompt_budget",
-        "ok",
+        "trimmed" if trimmed else "ok",
         total_chars=len(system),
+        trimmed_blocks=trimmed,
         **{f"{name}_chars": len(text) for name, text in blocks.items()},
     )
     return system
@@ -1684,9 +1740,15 @@ def _single_pass_answer(
             if refusal:
                 return {"error": refusal}
         result = tools.dispatch(tool_name, args, taint=list(turn_taint))
-        if tool_name in _UNTRUSTED_READ_TOOLS and not result.get("error"):
+        succeeded = not (isinstance(result, dict) and result.get("error"))
+        if tool_name in _UNTRUSTED_READ_TOOLS and succeeded:
             _add_taint(tool_name)
-        tool_results_seen += 1
+        # A rejected/failed tool call contributes no retrieved content that
+        # could be exfiltrated through a later search. Counting it here made a
+        # harmless sandbox error (for example, Python rejecting ``import``)
+        # permanently disable web search for the rest of the turn.
+        if succeeded:
+            tool_results_seen += 1
         return result
 
     if guard_web:

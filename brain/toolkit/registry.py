@@ -475,6 +475,22 @@ def approve_pending(action_id: str) -> dict:
             "error_kind": "stale_preview",
             "action": updated,
         }
+    # Refuse an action whose reviewed preview could not display a change-defining
+    # field in full. The whole taint/approval design funnels risky actions to the
+    # Actions panel *so the reviewer can see them*; approving one whose preview was
+    # cut short would let an injection-crafted payload hide past the visible
+    # portion. Release the claim so it stays pending rather than wedged.
+    if governance.preview_truncated(action):
+        pending.update_action(action_id, {"status": "pending", "approval_started_at": None})
+        return {
+            "error": (
+                "pending action preview is too large to display in full, so it cannot be "
+                "approved as-is; inspect the target directly or split the action into smaller "
+                "changes"
+            ),
+            "error_kind": "preview_truncated",
+            "action": pending.get(action_id) or action,
+        }
     snapshot = governance.snapshot_action(action.get("tool", ""), action.get("args") or {})
     pending.update_action(action_id, {"approval_snapshot": snapshot})
     try:

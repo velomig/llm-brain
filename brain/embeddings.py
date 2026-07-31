@@ -11,7 +11,7 @@ import ollama
 import config
 from brain import log
 
-_client = ollama.Client(host=config.OLLAMA_HOST)
+_client = ollama.Client(host=config.OLLAMA_HOST, timeout=config.OLLAMA_TIMEOUT_SECONDS)
 
 
 class EmbeddingUnavailable(RuntimeError):

@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import re
 import threading
 import time
@@ -52,6 +53,31 @@ SOURCE_FINGERPRINT = source_fingerprint()
 _TOKEN_COOKIE = "nm_token"
 
 
+class _RedactTokenQueryFilter(logging.Filter):
+    """Redact token=... from uvicorn access-log lines.
+
+    The browser bootstrap accepts the shared secret as a ?token= query param,
+    and uvicorn's access log records the full request path — without this the
+    only auth secret is persisted in plaintext to the logs."""
+
+    _pattern = re.compile(r"(token=)[^&\s\"]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            record.args = tuple(
+                self._pattern.sub(r"\1[redacted]", arg) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = self._pattern.sub(r"\1[redacted]", record.msg)
+        return True
+
+
+# Attached at import so it covers `python server.py` and `uvicorn server:app`
+# alike; uvicorn installs its handlers on this logger, filters persist beside them.
+logging.getLogger("uvicorn.access").addFilter(_RedactTokenQueryFilter())
+
+
 def _require_token_beyond_loopback() -> None:
     """Refuse to start a non-loopback server without a shared secret. The token
     middleware below is a no-op when NEURAL_MAP_TOKEN is empty, which is safe
@@ -78,6 +104,11 @@ _require_token_beyond_loopback()
 
 @app.middleware("http")
 async def require_body_size_limit(request: Request, call_next):
+    # Starlette runs LATER-registered middleware first, so despite appearing
+    # first in this file this is the INNERMOST gate: the token/host/origin
+    # middleware below have already rejected unauthenticated requests before
+    # any body bytes are buffered here. Keep it registered first so that stays
+    # true when adding middleware.
     if request.method in {"POST", "PUT", "PATCH"}:
         content_length = request.headers.get("content-length")
         if content_length:
@@ -1708,7 +1739,7 @@ def approve_pending_action(req: PendingActionDecisionReq):
             detail=f"Approval failed safely: {type(exc).__name__}: {exc}",
         ) from exc
     if result.get("error"):
-        if result.get("error_kind") == "stale_preview":
+        if result.get("error_kind") in {"stale_preview", "preview_truncated"}:
             raise HTTPException(status_code=409, detail=result)
         raise HTTPException(status_code=404, detail=result["error"])
     return result
