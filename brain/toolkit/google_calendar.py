@@ -295,6 +295,14 @@ def _attendees(value) -> list[dict]:
         email = str(item or "").strip().lower()
         if not EMAIL_RE.match(email):
             raise ValueError(f"invalid attendee email: {email}")
+        # Inviting an attendee emails them (sendUpdates="all"), which makes this
+        # an outbound channel exactly like send_email: the same recipient
+        # allowlist gates it. Fail closed when no allowlist is configured —
+        # unlike email drafts, an invite always leaves the machine.
+        if email not in config.EMAIL_ALLOWED_RECIPIENTS:
+            raise ValueError(
+                f"attendee is not in NEURAL_MAP_EMAIL_ALLOWED_RECIPIENTS: {email}"
+            )
         rows.append({"email": email})
     return rows
 

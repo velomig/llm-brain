@@ -15,7 +15,7 @@ import config
 from brain import log
 from brain.execution import context_aware_execution
 
-_client = ollama.Client(host=config.OLLAMA_HOST)
+_client = ollama.Client(host=config.OLLAMA_HOST, timeout=config.OLLAMA_TIMEOUT_SECONDS)
 
 
 class GenerationCancelled(BaseException):

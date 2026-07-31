@@ -14,7 +14,12 @@ from brain import store
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.memory import MemoryUnit, now_iso
 from brain.toolkit import local_state, memory_tools, source_truth
-from brain.toolkit.paths import resolve_tool_path, trusted_prompt_path, trusted_prompt_update_target
+from brain.toolkit.paths import (
+    reserved_code_path,
+    resolve_tool_path,
+    trusted_prompt_path,
+    trusted_prompt_update_target,
+)
 from brain.utils import file_lock
 
 PERMISSIONS_FILE = config.DB_DIR / ".neural_map_tool_permissions.json"
@@ -130,15 +135,33 @@ def list_permissions(tool_policies: dict[str, str]) -> dict:
     return {"tools": tools, "updated_at": data.get("updated_at")}
 
 
+_AUDIT_VALUE_CHARS = 2000
+
+
+def _audit_compact(value, depth: int = 0):
+    """Bound what one audit event can store. Full args (email bodies, write_file
+    content) accumulated across MAX_TOOL_AUDIT_EVENTS make the audit file tens
+    of MB of retained sensitive content, re-serialized on every append; the
+    approval preview is the full-fidelity record, the audit trail only needs
+    enough to identify what happened."""
+    if isinstance(value, str) and len(value) > _AUDIT_VALUE_CHARS:
+        return value[:_AUDIT_VALUE_CHARS] + f"… [{len(value)} chars total]"
+    if isinstance(value, dict) and depth < 4:
+        return {k: _audit_compact(v, depth + 1) for k, v in list(value.items())[:40]}
+    if isinstance(value, list) and depth < 4:
+        return [_audit_compact(v, depth + 1) for v in value[:40]]
+    return value
+
+
 def append_audit(action: dict, decision: str, result: dict | None = None) -> dict:
     event = {
         "id": f"audit_{uuid.uuid4().hex[:12]}",
         "action_id": action.get("id"),
         "tool": action.get("tool"),
         "policy": action.get("policy"),
-        "args": action.get("args") or {},
+        "args": _audit_compact(action.get("args") or {}),
         "decision": decision,
-        "result": result,
+        "result": _audit_compact(result) if isinstance(result, dict) else result,
         "created_at": now_iso(),
     }
     with _LOCK, _audit_lock():
@@ -195,8 +218,22 @@ def _clip_content(text: str | None, limit: int) -> str:
     return text[:limit] + "..."
 
 
-def _file_text(path: Path) -> str | None:
+# Existing-file ceiling for preview diffs. difflib.unified_diff is worst-case
+# quadratic, so an unbounded read here lets one write_file against a huge file
+# spike memory/CPU at approval-QUEUEING time, before any review happens.
+_MAX_PREVIEW_SOURCE_BYTES = 2 * 1024 * 1024
+
+
+def _file_text(path: Path, max_bytes: int = 0) -> str | None:
     try:
+        if max_bytes and path.stat().st_size > max_bytes:
+            # Too large to diff. Record the truncation so approve_pending
+            # refuses the partially-previewed action instead of letting it
+            # through unseen (same contract as _clip_content).
+            hits = getattr(_preview_truncation, "hits", None)
+            if hits is not None:
+                hits.append(True)
+            return None
         raw = path.read_bytes()
     except OSError:
         return None
@@ -324,10 +361,16 @@ def _preview_action(tool: str, args: dict | None = None) -> dict:
                     "path": str(path),
                     "blocked": f"trusted prompt file; write_file will refuse this path; {hint}",
                 }
+            if reserved_code_path(path):
+                return {
+                    "kind": "file_write",
+                    "path": str(path),
+                    "blocked": "project code path; write_file will refuse this path",
+                }
             mode = str(args.get("mode") or "create")
             content = "" if args.get("content") is None else str(args.get("content"))
-            old = _file_text(path) if path.exists() and path.is_file() else ""
-            new = old + content if mode == "append" else content
+            old = _file_text(path, max_bytes=_MAX_PREVIEW_SOURCE_BYTES) if path.exists() and path.is_file() else ""
+            new = (old or "") + content if mode == "append" else content
             diff = ""
             if old is not None:
                 diff = "".join(

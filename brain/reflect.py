@@ -17,10 +17,12 @@ Set NEURAL_MAP_INITIATIVE=0 to regress to the previous insight+reminder-only mod
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date, datetime, timedelta
 
 import config
 from brain import initiative, llm, log, store
+from brain.utils import file_lock
 from brain.utils import safe_json as _safe_json
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.memory import MemoryUnit
@@ -181,6 +183,14 @@ def _generated_ids(model: str | None, categories: tuple[str, ...] | None = None)
     return out
 
 
+_REFLECT_THREAD_LOCK = threading.Lock()
+
+
+def _reflect_lock():
+    """Cross-process exclusive lock for the reflection pass."""
+    return file_lock(config.DB_DIR / ".neural_map_reflect.lock")
+
+
 def reflect(model: str | None = None) -> dict:
     """Generate fresh insights and reminders from the current fact base.
 
@@ -191,7 +201,16 @@ def reflect(model: str | None = None) -> dict:
     failure anywhere along the way — model down, embed error, store error — leaves
     the existing insights/reminders intact instead of wiping them with nothing (or
     only a partial set) to show.
+
+    Serialized across threads and processes: without the lock, a concurrent
+    run's _generated_ids snapshot (taken after this run stored its output)
+    would include this run's fresh records and then delete them.
     """
+    with _REFLECT_THREAD_LOCK, _reflect_lock():
+        return _reflect_locked(model)
+
+
+def _reflect_locked(model: str | None = None) -> dict:
     corpus = _fact_corpus(model)
     if not corpus:
         return {"insights": 0, "reminders": 0, "initiatives": 0}

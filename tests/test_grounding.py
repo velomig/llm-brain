@@ -270,15 +270,18 @@ def test_pipeline_forces_grounding_review_for_phenomenal_claim(monkeypatch):
     assert len(calls) == 3
 
 
-def test_final_claim_guard_filters_unsupported_action_and_verification_claims():
+def test_final_claim_guard_qualifies_unsupported_action_and_verification_claims():
+    # The first-pass regexes over-match figurative phrasing, so unsupported
+    # action/verification claims are hedged in place — sentence retained, the
+    # limitation disclaimers appended — rather than silently deleted.
     state = grounding.analyze_turn("Run the tests")
 
     guarded = grounding.enforce_final_claims("I ran the tests. The tests passed.", state)
 
     assert guarded["modified"] is True
-    assert guarded["status"] == "filtered"
-    assert "I ran the tests" not in guarded["reply"]
-    assert "tests passed" not in guarded["reply"]
+    assert guarded["status"] == "qualified"
+    assert guarded["violations"] == []
+    assert "I ran the tests" in guarded["reply"]
     assert "no matching tool consequence" in guarded["reply"]
     assert "cannot claim verification" in guarded["reply"]
 
