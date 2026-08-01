@@ -218,6 +218,38 @@ def update_from_turn(
     return state()
 
 
+_LABEL_CUES = {
+    "cautious": "measured and careful; keep replies tighter and double-check before committing",
+    "alert": "attentive; stay focused, don't ramble",
+    "settled": "at ease; you can be more expansive and unhurried",
+    "warm": "warm; let it show in word choice and a more personal tone",
+    "subdued": "quiet; shorter, gentler replies, less initiative",
+    "decisive": "decisive; commit to recommendations plainly",
+    "tentative": "tentative; hedge where honestly unsure, keep scope modest",
+    "curious": "curious; a genuine follow-up question is welcome",
+    "low-curiosity": "low-energy; stick to the essentials",
+}
+
+
+def _style_guidance(current: dict) -> str:
+    """Turn the current stance into actionable style cues — including pacing and
+    verbosity, not just word choice — so the carried posture is actually felt."""
+    labels = current.get("labels") or _labels(current)
+    cues = [_LABEL_CUES[label] for label in labels if label in _LABEL_CUES]
+    guidance = (
+        "Use as subtle tone/style guidance that also shapes pacing, reply "
+        "length, and how much initiative to show."
+    )
+    if cues:
+        guidance += " Right now: " + "; ".join(cues) + "."
+    guidance += (
+        " Keep it invisible: the user should feel it, not hear about it. "
+        "Do not claim literal feelings. Do not reduce factual accuracy, safety, "
+        "or willingness to help."
+    )
+    return guidance
+
+
 def prompt_block(current: dict | None = None) -> str:
     """JSON block injected into the system prompt."""
     if not config.EMOTION_ENABLED:
@@ -230,10 +262,7 @@ def prompt_block(current: dict | None = None) -> str:
             "confidence": current["confidence"],
             "curiosity": current["curiosity"],
             "labels": current.get("labels") or _labels(current),
-            "guidance": (
-                "Use only as subtle tone/style guidance. Do not claim literal feelings. "
-                "Do not reduce factual accuracy, safety, or willingness to help."
-            ),
+            "guidance": _style_guidance(current),
         },
         ensure_ascii=True,
     )

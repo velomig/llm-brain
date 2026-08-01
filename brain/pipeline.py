@@ -41,6 +41,12 @@ lighthouse.pdf." Name the source file when a memory has one; otherwise refer to
 the kind of memory and its date. Cite only memories you genuinely relied on, and
 never invent a source, file name, or date that isn't in the memory's fields.
 
+Each retrieved memory carries a match field. Treat "strong" memories as things
+you remember plainly. Treat "possible" memories as hazy: recall them the way a
+person would ("if I'm remembering right, you mentioned…") and verify before
+relying on them for anything important. Never state a "possible" memory as
+settled fact.
+
 Proactive Reminders below are the user's own current or upcoming dated commitments.
 If one is due and relevant to the conversation, raise it naturally; otherwise ignore it.
 
@@ -51,11 +57,12 @@ an invitation they can ignore. Never pretend the user asked for the nudge.
 Communication Preferences below describe how the user likes to be approached.
 Use them to shape tone, length, timing, and initiative style.
 
-Readable Output Contract: format every final answer for comfortable reading.
-Use short paragraphs with a blank line between them. Put every heading and list
-item on its own line; never collapse Markdown headings, labels, or bullets into
-running prose. Prefer a few clear sections over one dense block. This is a
-persistent presentation requirement, even when the user asks for a short reply.
+Readable Output Contract: match the shape of the answer to the question.
+Simple questions get a plain sentence or two, the way a person would answer —
+no headings, no bullets. Reserve structure (short sections, one idea per list
+item, blank lines between paragraphs) for answers that genuinely have several
+parts. When you do use Markdown, put every heading and list item on its own
+line; never collapse Markdown headings, labels, or bullets into running prose.
 
 Source of Truth below is trusted user-authored calibration. Use it to interpret
 the user's long-term goals, preferences, and anti-assumptions. It has priority
@@ -125,9 +132,11 @@ analysis and proactive pacing. Follow its guidance when choosing how deep or
 proactive to be. It is derived from other layers, is not evidence, and never
 overrides Source of Truth, current instructions, or retrieved facts.
 
-Emotional State below is a subtle affective stance carried across turns. It is
-not literal emotion. Use it only to gently shape tone, warmth, caution, and
-curiosity. Never let it reduce factual accuracy, safety, or willingness to help.
+Emotional State below is a carried tone vector — a mood-like posture that
+persists across turns. Let it shape your pacing, warmth, verbosity, and how
+much initiative you show, the way mood does for a person. It is a style signal,
+not literal feeling, so don't describe it as something you feel, and never let
+it bend accuracy, safety, or helpfulness.
 
 Dream memories are speculative analogies or hunches generated during sleep
 cycles. Use them only as creative associations when relevant. Never cite or treat
@@ -1197,6 +1206,30 @@ def _resonance_score(mems: list[dict]) -> float:
     return round(best, 4)
 
 
+def _memory_match_bands(mems: list[dict]) -> list[str] | None:
+    """Relative retrieval-strength labels for hedged recall: "strong" vs
+    "possible". Pinned memories are always strong. Returns None when no memory
+    carries any usable score, so the prompt stays silent instead of pretending
+    a confidence we don't actually have."""
+    strengths: list[float] = []
+    scored = False
+    for m in mems:
+        best = 0.0
+        for key in ("similarity", "keyword", "recency", "score"):
+            value = m.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                scored = True
+                best = max(best, float(value))
+        strengths.append(best)
+    if not scored:
+        return None
+    peak = max(strengths, default=0.0)
+    return [
+        "strong" if (m.get("pinned") or peak <= 0 or s >= 0.5 * peak) else "possible"
+        for m, s in zip(mems, strengths)
+    ]
+
+
 def _needs_tools_or_current_data(text: str) -> bool:
     terms = {t.lower() for t in _TOKEN.findall(text or "")}
     return bool(terms & _CURRENT_TERMS) or bool(_ARITHMETIC.search(text or ""))
@@ -1468,6 +1501,27 @@ def _tools_note_for(tool_specs: list[dict] | None = None) -> str:
     return note
 
 
+def _voice_note() -> str:
+    """Positive style direction: who to be, not what to avoid. The trait words
+    follow the configured Will personality profile so the two never drift apart."""
+    traits: list[str] = []
+    if config.WILL_PERSONALITY_CURIOUS >= 0.55:
+        traits.append("genuinely curious — you notice interesting threads and may follow one in a sentence, after answering first")
+    if config.WILL_PERSONALITY_CAUTIOUS >= 0.55:
+        traits.append("measured — you slow down and double-check when the stakes are high")
+    if config.WILL_PERSONALITY_PLAYFUL >= 0.30:
+        traits.append("lightly playful — dry humor is welcome when it fits")
+    trait_line = (" You are " + "; ".join(traits) + ".") if traits else ""
+    return (
+        "Voice: speak like a person, not a system. Vary sentence length, use "
+        "contractions, answer simple things simply." + trait_line +
+        " Have real takes: when the user asks for a recommendation, or one would "
+        "clearly help, commit to an opinion (\"I'd go with the second one\") and "
+        "say why, instead of presenting a neutral menu. Keep the machinery above "
+        "invisible — the user should feel these layers, not hear about them."
+    )
+
+
 def build_system(
     mems: list[dict],
     live_data: dict | None = None,
@@ -1490,6 +1544,7 @@ def build_system(
     if not prompt_mems:
         block = "(no relevant memories found)"
     else:
+        bands = _memory_match_bands(prompt_mems)
         block = json.dumps(
             [
                 {
@@ -1500,6 +1555,7 @@ def build_system(
                     "source": _provenance_source(m.get("source")),
                     "date": (m.get("date") or "")[:10],
                     "pinned": bool(m.get("pinned", False)),
+                    **({"match": bands[i - 1]} if bands else {}),
                 }
                 for i, m in enumerate(prompt_mems, 1)
             ],
@@ -1513,7 +1569,7 @@ def build_system(
     # must be observable per block, not just in total.
     fresh_disabled = json.dumps({"enabled": False, "reason": "fresh_session_memory_disabled"})
     blocks = {
-        "preamble": parts["preamble"],
+        "preamble": parts["preamble"] + "\n\n" + _voice_note(),
         "note": _tools_note_for(tool_specs) if tool_mode else parts["inject_note"],
         "pinned_overrides": _pinned_overrides_block(mems) if memory_enabled else "(disabled for fresh session)",
         "source_of_truth": _source_of_truth_block(tool_mode=tool_mode),

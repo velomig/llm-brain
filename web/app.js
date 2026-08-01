@@ -117,6 +117,58 @@ function setBubbleText(bubble, text) {
   updateTranscriptBubble(bubble, value);
 }
 
+// Reveal assistant replies at a natural reading pace instead of all at once.
+// The server responds whole-message, so the pacing lives here: quick bursts
+// mid-thought, small breaths at punctuation, no theatrics for short replies.
+function revealAssistantReply(bubble, full) {
+  const display = formatAssistantDisplayText(full == null ? '' : String(full));
+  const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const content = bubble.querySelector('.bubble-content');
+  if (reduced || !content || display.length < 160) {
+    setBubbleText(bubble, full);
+    return Promise.resolve();
+  }
+  const token = String(Date.now()) + Math.random().toString(36).slice(2);
+  bubble.dataset.revealToken = token;   // a newer reveal/render supersedes this one
+  const chars = Array.from(display);    // code points, not UTF-16 halves
+  // Budget the reveal by length: brisk for medium replies, capped for long ones.
+  const budgetMs = Math.min(9000, Math.max(2000, display.length * 11));
+  const pauseChars = '.!?…';
+  const breathChars = ',;:—–';
+  const t0 = performance.now();
+  let i = 0;
+  return new Promise(resolve => {
+    const step = () => {
+      if (bubble.dataset.revealToken !== token) { resolve(); return; }
+      // Self-correcting burst size: punctuation pauses eat into the budget, so
+      // recompute from what's left each tick to land close to budgetMs overall.
+      const remainingMs = budgetMs - (performance.now() - t0);
+      const burst = remainingMs > 0
+        ? Math.max(2, Math.ceil((chars.length - i) / (remainingMs / 26)))
+        : chars.length - i;
+      i = Math.min(chars.length, i + burst);
+      // Run on to a punctuation boundary when one is right there, so the
+      // pause lands ON the punctuation the way a reader's would.
+      while (i < chars.length && (pauseChars + breathChars).includes(chars[i])) i++;
+      content.textContent = chars.slice(0, i).join('');
+      const box = document.getElementById('messages');
+      if (box) box.scrollTop = box.scrollHeight;
+      if (i >= chars.length) {
+        setBubbleText(bubble, full);   // finalize copy text + transcript row
+        resolve();
+        return;
+      }
+      const last = chars[i - 1];
+      let delay = 18 + Math.random() * 22;
+      if (pauseChars.includes(last)) delay = 140 + Math.random() * 160;
+      else if (breathChars.includes(last)) delay = 60 + Math.random() * 70;
+      else if (last === '\n') delay = 45 + Math.random() * 50;
+      setTimeout(step, delay);
+    };
+    step();
+  });
+}
+
 function saveTranscript() {
   try {
     localStorage.setItem(CHAT_TRANSCRIPT_KEY, JSON.stringify(chatTranscript.slice(-CHAT_TRANSCRIPT_LIMIT)));
@@ -2204,9 +2256,9 @@ async function send(message, options = {}) {
 	      renderContextUsage(res.context_usage);
 	    }
       else if (!res.pending_decision) markContextUsageUnavailable();
-	    setBubbleText(bubble, res.reply);
+	    commitChatTurn(message, res.reply);   // commit before the reveal so overlapping sends see the completed turn
+	    await revealAssistantReply(bubble, res.reply);
       recordBubble(bubble, 'assistant', res.reply);
-      commitChatTurn(message, res.reply);
     renderRecalled(res.memories);
     if (res.reminders) renderReminders(res.reminders);
     if (res.awareness) renderAwareness(res.awareness, res.attention || null);
