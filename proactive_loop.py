@@ -15,12 +15,16 @@ import json
 import time
 
 import config
-from brain import will
+from brain import pulse, will
 
 
 def _run_once(model: str | None, mode: str | None, dry_run: bool) -> dict:
     result = will.review(model=model, mode=mode, dry_run=dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not dry_run:
+        created = result.get("created", 0)
+        status = f"initiated {created} new item(s)" if created else (result.get("reason") or "no action taken")
+        pulse.record("will.py", "Reviewed goals/reminders/memories", status)
     return result
 
 

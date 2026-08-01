@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from brain import portable, sleep
+from brain import portable, pulse, sleep
 
 
 def main() -> None:
@@ -43,6 +43,12 @@ def main() -> None:
     )
     result["backup"] = backup
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not args.dry_run:
+        pulse.record(
+            "sleep_cycle.py",
+            "Consolidated memory (archive + dreams)",
+            f"archived {result.get('archived', 0)}, dreamed {result.get('dreamed', 0)}",
+        )
 
 
 if __name__ == "__main__":

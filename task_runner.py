@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from brain import tasks
+from brain import pulse, tasks
 
 
 def main() -> None:
@@ -38,6 +38,10 @@ def main() -> None:
         return
 
     finished = tasks.run_pending(model=args.model, limit=args.limit)
+    if finished:
+        parked = sum(1 for t in finished if t.get("status") == "awaiting_approval")
+        status = f"{len(finished)} task(s) finished" + (f", {parked} awaiting approval" if parked else "")
+        pulse.record("task_runner.py", "Drained background task queue", status)
     print(json.dumps(
         {
             "ran": len(finished),

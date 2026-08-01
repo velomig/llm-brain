@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 
 import config
-from brain import attention, awareness, arbiter, cognitive_state, council, domains, emotion, evolution, grounding as semantic_grounding, homeostasis, initiative, llm, log, metacognition, observability, perspective, presence, readability, reflect, self_model, store, tools, workspace as shared_workspace
+from brain import attention, awareness, arbiter, cognitive_state, council, domains, emotion, evolution, grounding as semantic_grounding, homeostasis, initiative, llm, log, metacognition, observability, perspective, presence, pulse, readability, reflect, self_model, store, tools, workspace as shared_workspace
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.execution import context_aware_execution
 from brain.layer_contract import is_exhausted
@@ -292,6 +292,9 @@ Grounding Gate JSON:
 Awareness State JSON:
 {awareness_state}
 
+System Pulse (recent autonomous background runs, one per line, newest last):
+{system_pulse}
+
 Attention State JSON:
 {attention_state}
 
@@ -345,6 +348,7 @@ actually show. Cite at least one URL when answering from web results."""
 # point of budgeting here instead of letting Ollama truncate the tail.
 _PROMPT_TRIM_ORDER = (
     "workspace_state",
+    "system_pulse",
     "awareness_state",
     "attention_state",
     "homeostasis",
@@ -1144,6 +1148,17 @@ def _attention_state_block() -> str:
         return json.dumps({"enabled": False, "error": "unavailable"}, ensure_ascii=True)
 
 
+def _system_pulse_block() -> str:
+    try:
+        lines = pulse.recent(limit=20)
+    except Exception as exc:
+        log.fallback("system_pulse_prompt_failed", exc, phase="prompt")
+        return "(system pulse unavailable)"
+    if not lines:
+        return "(no background runs recorded yet)"
+    return "\n".join(lines)
+
+
 def _self_model_block() -> str:
     try:
         return json.dumps(self_model.prompt_snapshot(), ensure_ascii=True)
@@ -1516,6 +1531,7 @@ def build_system(
         "grounding_state": _grounding_state_block(grounding_state),
         "grounding_gate": _grounding_gate_block(grounding_gate),
         "awareness_state": _awareness_state_block() if memory_enabled else fresh_disabled,
+        "system_pulse": _system_pulse_block() if memory_enabled else "(disabled for fresh session)",
         "attention_state": _attention_state_block() if memory_enabled else fresh_disabled,
         "self_model": _self_model_block() if memory_enabled else fresh_disabled,
         "homeostasis": _homeostasis_block() if memory_enabled else fresh_disabled,
@@ -1555,6 +1571,7 @@ def build_system(
             grounding_state=blocks["grounding_state"],
             grounding_gate=blocks["grounding_gate"],
             awareness_state=blocks["awareness_state"],
+            system_pulse=blocks["system_pulse"],
             attention_state=blocks["attention_state"],
             self_model=blocks["self_model"],
             homeostasis=blocks["homeostasis"],

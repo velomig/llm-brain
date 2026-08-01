@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 
-from brain import initiative, reflect, store
+from brain import initiative, pulse, reflect, store
 
 
 def main() -> None:
@@ -26,6 +26,12 @@ def main() -> None:
     print(
         f"reflection: {result['insights']} insight(s), "
         f"{result['reminders']} reminder(s), {result.get('initiatives', 0)} initiative(s)"
+    )
+    pulse.record(
+        "reflect_job.py",
+        "Distilled insights/reminders from stored facts",
+        f"{result['insights']} insight(s), {result['reminders']} reminder(s), "
+        f"{result.get('initiatives', 0)} initiative(s)",
     )
     for r in reflect.active_reminders():
         flag = "OVERDUE" if r.get("overdue") else "upcoming"
