@@ -848,6 +848,18 @@ def test_tool_permission_disables_dispatch_and_active_spec():
     assert "read_file" in {spec["function"]["name"] for spec in tools.active_tool_specs()}
 
 
+def test_private_calendar_store_is_never_exposed_to_models():
+    specs = tools.active_tool_specs()
+    names = {spec["function"]["name"] for spec in specs}
+
+    assert "list_calendar_events" not in names
+    assert "create_calendar_event" not in names
+    assert "list_google_calendar_events" in names
+    assert "create_google_calendar_event" in names
+    live_read = next(spec for spec in specs if spec["function"]["name"] == "list_google_calendar_events")
+    assert "query" not in live_read["function"]["parameters"]["properties"]
+
+
 def test_pending_action_api_approve_executes(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TOOL_ALLOWED_ROOTS", [tmp_path])
     client = TestClient(server.app, base_url="http://127.0.0.1")

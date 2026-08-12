@@ -87,6 +87,70 @@ def test_no_prefetch_leaves_taint_clean(monkeypatch):
     assert captured["taint"] == []
 
 
+def test_real_calendar_request_hides_private_calendar_tools_and_injects_target(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(pipeline.config, "TOOL_CALLING_ENABLED", True)
+    monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
+    monkeypatch.setattr(pipeline, "_needs_web_prefetch", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "_needs_financial_prefetch", lambda *a, **k: False)
+
+    def fake_chat_with_tools(system, user_text, tool_specs, dispatch, **kwargs):
+        captured["specs"] = {spec["function"]["name"] for spec in tool_specs}
+        captured["result"] = dispatch(
+            "list_google_calendar_events",
+            {"from_date": "2026-09-01", "to_date": "2026-11-01", "query": "nursing"},
+        )
+        return "done", [{"tool": "list_google_calendar_events"}]
+
+    monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+
+    def fake_dispatch(name, args=None, taint=None):
+        captured["dispatch"] = (name, dict(args or {}))
+        return {"events": []}
+
+    monkeypatch.setattr(pipeline.tools, "dispatch", fake_dispatch)
+
+    pipeline._single_pass_answer(
+        "Use the live calendar tool and list my Work calendar nursing events for September and October 2026.",
+        [], [], [], [], None,
+    )
+
+    assert "list_calendar_events" not in captured["specs"]
+    assert "create_calendar_event" not in captured["specs"]
+    assert captured["dispatch"][0] == "list_google_calendar_events"
+    assert captured["dispatch"][1]["calendar_id"] == "Work"
+    assert "query" not in captured["dispatch"][1]
+
+
+def test_real_calendar_request_redirects_stale_private_calendar_call(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(pipeline.config, "TOOL_CALLING_ENABLED", True)
+    monkeypatch.setattr(pipeline.llm, "supports_tools", lambda name: True)
+    monkeypatch.setattr(pipeline, "_needs_web_prefetch", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "_needs_financial_prefetch", lambda *a, **k: False)
+
+    def fake_chat_with_tools(system, user_text, tool_specs, dispatch, **kwargs):
+        dispatch("list_calendar_events", {"from_date": "2026-09-01", "to_date": "2026-11-01"})
+        return "done", [{"tool": "list_calendar_events"}]
+
+    monkeypatch.setattr(pipeline.llm, "chat_with_tools", fake_chat_with_tools)
+
+    def fake_dispatch(name, args=None, taint=None):
+        captured["dispatch"] = (name, dict(args or {}))
+        return {"events": []}
+
+    monkeypatch.setattr(pipeline.tools, "dispatch", fake_dispatch)
+    pipeline._single_pass_answer("What is on my Work calendar?", [], [], [], [], None)
+
+    assert captured["dispatch"][0] == "list_google_calendar_events"
+    assert captured["dispatch"][1]["calendar_id"] == "Work"
+
+
+def test_every_calendar_request_is_real_even_when_user_says_local():
+    assert pipeline._real_calendar_request("List my private local calendar events") is True
+    assert pipeline._real_calendar_request("What is on my calendar?") is True
+
+
 # --- injection fallback honors the web privacy guard -----------------------------
 
 def _injection_path_setup(monkeypatch, search_calls):

@@ -163,7 +163,7 @@ TOOL_SPECS = [
     _spec(
         "list_google_calendar_events",
         "Read live real-calendar events, normalized to America/Phoenix local time. The provider may be direct Google Calendar or macOS Calendar spanning locally synced iCloud, Google, and other accounts. Use this, not list_calendar_events, whenever the user refers to Google Calendar, Apple/macOS Calendar, iCloud Calendar, synced events, or their real schedule. Treat recurrence_scan_skipped as an explicit completeness warning for oversized calendars. Returned event ids and etags are required for safe updates/deletes.",
-        {"from_date": {"type": "string"}, "to_date": {"type": "string"}, "query": {"type": "string"}, "max_results": {"type": "integer"}, "calendar_id": {"type": "string"}},
+        {"from_date": {"type": "string"}, "to_date": {"type": "string"}, "max_results": {"type": "integer"}, "calendar_id": {"type": "string", "description": "Exact Calendar.app label when the user names one, for example Work. Omit to read all real calendars."}},
     ),
     _spec(
         "create_google_calendar_event",
@@ -364,6 +364,7 @@ def _runtime_metadata_guard(name: str, *, phase: str) -> dict | None:
 _assert_registry_integrity()
 
 ACTION_TOOL_NAMES = set(HANDLERS) - {"get_current_datetime", "calculate", "get_stock_quotes", "web_search"}
+MODEL_HIDDEN_TOOL_NAMES = {"create_calendar_event", "list_calendar_events"}
 
 
 def active_tool_specs() -> list[dict]:
@@ -374,6 +375,7 @@ def active_tool_specs() -> list[dict]:
         spec
         for spec in TOOL_SPECS
         if governance.tool_enabled(spec.get("function", {}).get("name", ""))
+        and spec.get("function", {}).get("name", "") not in MODEL_HIDDEN_TOOL_NAMES
     ]
     if config.ACTION_TOOLS_ENABLED:
         return specs

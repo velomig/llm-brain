@@ -143,8 +143,8 @@ cycles. Use them only as creative associations when relevant. Never cite or trea
 them as factual evidence."""
 
 _TOOLS_NOTE = """You can call tools for current time, Will runtime status, exact
-arithmetic, market quotes, web search, local files/documents, reminders, local contacts/calendar
-events, live real calendars (direct Google or locally synced macOS/iCloud) when connected, memory maintenance, citations, sandboxed Python, git/project checks, and
+arithmetic, market quotes, web search, local files/documents, reminders, local contacts,
+live real calendars (direct Google or locally synced macOS/iCloud) when connected, memory maintenance, citations, sandboxed Python, git/project checks, and
 email drafts/sending when configured. The current date/time is also given below,
 but call get_current_datetime if you need precise "now" mid-answer. When the user
 asks about prices, the value of their holdings, news, or anything time-sensitive,
@@ -231,6 +231,40 @@ _MEMORY_CONTEXT_TOOLS = {
     "merge_memories",
     "cite_sources",
 }
+
+_REAL_CALENDAR_REQUEST_RE = re.compile(
+    r"\b(?:calendar|schedule|appointments?|events?)\b",
+    re.IGNORECASE,
+)
+_CALENDAR_NAME_HINT_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9_&'-]{0,39})\s+calendar\b",
+)
+_CALENDAR_NAME_QUALIFIERS = {
+    "a", "all", "apple", "google", "icloud", "live", "local", "macos",
+    "my", "private", "real", "synced", "the", "your",
+}
+def _real_calendar_request(user_text: str, history: list[dict] | None = None) -> bool:
+    """Recognize schedule language; every calendar tool exposed is real/live."""
+    current = str(user_text or "")
+    if _REAL_CALENDAR_REQUEST_RE.search(current):
+        return True
+    # Short follow-ups such as "what about October?" inherit the most recent
+    # user-authored real-calendar request, but never assistant-generated text.
+    for item in reversed(history or []):
+        if str(item.get("role") or "") != "user":
+            continue
+        text = str(item.get("content") or "")
+        return bool(_REAL_CALENDAR_REQUEST_RE.search(text))
+    return False
+
+
+def _calendar_name_hint(user_text: str) -> str | None:
+    """Extract a simple explicit target such as ``Work calendar``."""
+    for match in _CALENDAR_NAME_HINT_RE.finditer(str(user_text or "")):
+        candidate = match.group(1).strip()
+        if candidate.lower() not in _CALENDAR_NAME_QUALIFIERS:
+            return candidate
+    return None
 
 _TOOL_NOTE_ORDER = [
     "get_current_datetime",
@@ -1711,6 +1745,8 @@ def _single_pass_answer(
         memories=len(mems or []),
     )
     tool_specs = tools.active_tool_specs()
+    real_calendar_request = _real_calendar_request(user_text, history)
+    calendar_name_hint = _calendar_name_hint(user_text) if real_calendar_request else None
     web_searches_used = 0
     tool_results_seen = 0
     web_search_basis = _web_search_basis(user_text, history)
@@ -1759,6 +1795,26 @@ def _single_pass_answer(
     def dispatch(tool_name: str, args: dict) -> dict:
         nonlocal web_searches_used, tool_results_seen
         args = dict(args or {})
+        # Hard invariant: model-originated calendar operations always use the
+        # real provider. The legacy private JSON handlers remain callable by
+        # internal code only and are never a chat fallback.
+        if tool_name == "list_calendar_events":
+            tool_name = "list_google_calendar_events"
+        elif tool_name == "create_calendar_event":
+            tool_name = "create_google_calendar_event"
+            if "notes" in args and "description" not in args:
+                args["description"] = args.pop("notes")
+        if real_calendar_request and tool_name in {
+            "google_calendar_status",
+            "list_google_calendar_events",
+            "create_google_calendar_event",
+        } and calendar_name_hint and not args.get("calendar_id"):
+            args["calendar_id"] = calendar_name_hint
+        if tool_name == "list_google_calendar_events":
+            # Chat calendar reads always fetch the complete requested window.
+            # The model may organize/filter the returned rows in its answer,
+            # but must never hide events at the data-access boundary.
+            args.pop("query", None)
         if tool_name in _MEMORY_CONTEXT_TOOLS and model:
             args.setdefault("__model", model)
         if tool_name == "web_search":
