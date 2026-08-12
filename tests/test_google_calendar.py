@@ -224,6 +224,47 @@ def test_macos_calendar_fallback_reads_live_events(monkeypatch):
     assert out["events"][0]["etag"].startswith('"macos-')
 
 
+def test_macos_calendar_script_does_not_call_removed_calendar_helper():
+    script = google_calendar._MACOS_JXA
+
+    assert "function writeCalendar" in script
+    assert "function searchCalendars" in script
+    assert "function findEvent" in script
+    assert "calendarFor(" not in script
+    assert "findEvent(input.event_id, calendarName)" in script
+    assert "calendar.events.recurrence()" in script
+    assert "excludedDates" in script
+    assert "calendar.writable()" in script
+    assert "calendarName || !emailNamed" in script
+
+
+def test_macos_calendar_expands_recurring_events_and_honors_exclusions():
+    master = {
+        "id": "series_1",
+        "title": "Nursing Lab",
+        "start": {"dateTime": "2026-08-17T20:00:00+00:00"},
+        "end": {"dateTime": "2026-08-17T23:00:00+00:00"},
+        "all_day": False,
+        "recurrence": "FREQ=WEEKLY;INTERVAL=1;UNTIL=20261001T000000Z;BYDAY=MO",
+        "excluded_dates": ["2026-09-14T20:00:00.000Z"],
+    }
+
+    rows = google_calendar._mac_occurrences(
+        [master],
+        "2026-09-01T00:00:00-07:00",
+        "2026-10-01T00:00:00-07:00",
+        100,
+    )
+
+    assert [row["start"]["dateTime"] for row in rows] == [
+        "2026-09-07T20:00:00+00:00",
+        "2026-09-21T20:00:00+00:00",
+        "2026-09-28T20:00:00+00:00",
+    ]
+    assert all(row["recurring"] is True for row in rows)
+    assert all("::occurrence::" in row["id"] for row in rows)
+
+
 def test_macos_calendar_create_still_waits_for_approval(monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_CALENDAR_PROVIDER", "macos")
     calls = []

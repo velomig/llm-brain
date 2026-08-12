@@ -159,10 +159,10 @@ TOOL_SPECS = [
     _spec("lookup_contact", "Search local contacts.", {"query": {"type": "string"}}, ["query"]),
     _spec("create_calendar_event", "Create a private local calendar-style event.", {"title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "notes": {"type": "string"}}, ["title", "start"]),
     _spec("list_calendar_events", "List private local calendar-style events.", {"from_date": {"type": "string"}, "to_date": {"type": "string"}}),
-    _spec("google_calendar_status", "Check whether Will is connected to Google Calendar.", {"calendar_id": {"type": "string"}}),
+    _spec("google_calendar_status", "Check whether Will can access the live calendar provider: direct Google Calendar or locally synced macOS Calendar accounts including iCloud and Google.", {"calendar_id": {"type": "string"}}),
     _spec(
         "list_google_calendar_events",
-        "Read live Google Calendar events, normalized to America/Phoenix local time. Use this, not list_calendar_events, whenever the user refers to Google Calendar or their real schedule. Returned event ids and etags are required for safe updates/deletes.",
+        "Read live real-calendar events, normalized to America/Phoenix local time. The provider may be direct Google Calendar or macOS Calendar spanning locally synced iCloud, Google, and other accounts. Use this, not list_calendar_events, whenever the user refers to Google Calendar, Apple/macOS Calendar, iCloud Calendar, synced events, or their real schedule. Treat recurrence_scan_skipped as an explicit completeness warning for oversized calendars. Returned event ids and etags are required for safe updates/deletes.",
         {"from_date": {"type": "string"}, "to_date": {"type": "string"}, "query": {"type": "string"}, "max_results": {"type": "integer"}, "calendar_id": {"type": "string"}},
     ),
     _spec(

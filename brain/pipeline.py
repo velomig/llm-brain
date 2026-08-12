@@ -144,7 +144,7 @@ them as factual evidence."""
 
 _TOOLS_NOTE = """You can call tools for current time, Will runtime status, exact
 arithmetic, market quotes, web search, local files/documents, reminders, local contacts/calendar
-events, live Google Calendar when connected, memory maintenance, citations, sandboxed Python, git/project checks, and
+events, live real calendars (direct Google or locally synced macOS/iCloud) when connected, memory maintenance, citations, sandboxed Python, git/project checks, and
 email drafts/sending when configured. The current date/time is also given below,
 but call get_current_datetime if you need precise "now" mid-answer. When the user
 asks about prices, the value of their holdings, news, or anything time-sensitive,
@@ -176,11 +176,11 @@ _TOOL_NOTE_FRAGMENTS = {
     "lookup_contact": "upsert/lookup local contacts",
     "create_calendar_event": "create/list local calendar events",
     "list_calendar_events": "create/list local calendar events",
-    "google_calendar_status": "Google Calendar connection status",
-    "list_google_calendar_events": "read live Google Calendar events",
-    "create_google_calendar_event": "create live Google Calendar events (approval-gated)",
-    "update_google_calendar_event": "update live Google Calendar events (approval-gated)",
-    "delete_google_calendar_event": "delete live Google Calendar events (approval-gated)",
+    "google_calendar_status": "live calendar connection status (Google or macOS/iCloud)",
+    "list_google_calendar_events": "read live Google or locally synced macOS/iCloud Calendar events",
+    "create_google_calendar_event": "create live calendar events (approval-gated)",
+    "update_google_calendar_event": "update live calendar events (approval-gated)",
+    "delete_google_calendar_event": "delete live calendar events (approval-gated)",
     "update_memory": "update/pin/merge/retire memories",
     "pin_memory": "update/pin/merge/retire memories",
     "mark_memory_wrong": "update/pin/merge/retire memories",

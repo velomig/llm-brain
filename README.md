@@ -87,12 +87,12 @@ is stored at `memory_store/.google_calendar_token.json` with owner-only file
 permissions; `memory_store/` is gitignored. Restart Neural Map after connecting.
 
 If direct OAuth is unavailable—such as when Google Advanced Protection blocks a
-personal/unverified OAuth app—the default `auto` provider falls back to the
-email-named calendar already synced in macOS Calendar. This route stays local to
-the Mac and keeps the same Actions approval gate for every write. Set
-`NEURAL_MAP_GOOGLE_CALENDAR_PROVIDER=macos` to force it, and optionally set
-`NEURAL_MAP_GOOGLE_CALENDAR_MACOS_NAME` when more than one email-named calendar
-exists.
+personal/unverified OAuth app—the default `auto` provider falls back to macOS
+Calendar. Reads span the locally synced iCloud, Google, and other calendars and
+expand recurring series into the requested date window. Writes still require
+one unambiguous target calendar and keep the same Actions approval gate. Set
+`NEURAL_MAP_GOOGLE_CALENDAR_PROVIDER=macos` to force this route, and optionally
+set `NEURAL_MAP_GOOGLE_CALENDAR_MACOS_NAME` to choose the write calendar.
 
 Optional overrides are `NEURAL_MAP_GOOGLE_CALENDAR_CLIENT_SECRET`,
 `NEURAL_MAP_GOOGLE_CALENDAR_TOKEN`, `NEURAL_MAP_GOOGLE_CALENDAR_ID` (default

@@ -28,14 +28,36 @@ _MACOS_JXA = r'''
 const input = JSON.parse(__INPUT__);
 const app = Application("Calendar");
 
-function calendarFor(name) {
+// Write target only: mutations need one unambiguous calendar. Reads instead
+// span every calendar via searchCalendars(), because events live wherever the
+// user's accounts put them (iCloud, Google, local) — see findEvent/list below.
+function writeCalendar(name) {
   const calendars = app.calendars();
   if (name) {
-    const exact = calendars.find(c => c.name() === name);
-    if (exact) return exact;
+    const exact = calendars.filter(c => c.name() === name);
+    return exact.length === 1 ? exact[0] : null;
   }
   const emailNamed = calendars.filter(c => /^[^@\s]+@[^@\s]+$/.test(c.name()));
   if (emailNamed.length === 1) return emailNamed[0];
+  return null;
+}
+
+function searchCalendars(name) {
+  const calendars = app.calendars();
+  return name ? calendars.filter(c => c.name() === name) : calendars;
+}
+
+// Bulk property fetches (calendar.events.uid() etc.) are one Apple Event per
+// property; touching each event individually is orders of magnitude slower
+// and blows the osascript timeout on calendars with a few hundred events.
+function findEvent(uid, name) {
+  const calendars = searchCalendars(name);
+  for (const c of calendars) {
+    let uids;
+    try { uids = c.events.uid(); } catch (_) { continue; }
+    const i = uids.indexOf(uid);
+    if (i >= 0) return {event: c.events()[i], calendarName: c.name()};
+  }
   return null;
 }
 
@@ -50,9 +72,13 @@ function eventDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(raw + "T00:00:00") : new Date(raw);
 }
 
-function record(event) {
+function record(event, calendarName) {
   let notes = null;
+  let recurrence = null;
+  let excludedDates = [];
   try { notes = event.description(); } catch (_) {}
+  try { recurrence = event.recurrence() || null; } catch (_) {}
+  try { excludedDates = (event.excludedDates() || []).map(iso).filter(Boolean); } catch (_) {}
   return {
     id: event.uid(),
     status: "confirmed",
@@ -65,7 +91,10 @@ function record(event) {
     organizer: null,
     html_link: null,
     updated: null,
-    all_day: !!event.alldayEvent()
+    all_day: !!event.alldayEvent(),
+    calendar_name: calendarName || null,
+    recurrence: recurrence,
+    excluded_dates: excludedDates
   };
 }
 
@@ -73,9 +102,9 @@ function record(event) {
 // Re-checking it here, inside the same osascript run as the mutation, is what
 // makes the stale-event guard hold: a concurrent calendar change between the
 // caller's read and this run flips a field and the mutation is refused.
-function matchesExpected(event, expected) {
+function matchesExpected(event, expected, calendarName) {
   if (!expected) return true;
-  const current = record(event);
+  const current = record(event, calendarName);
   return ["title", "start", "end", "description", "location", "all_day"].every(
     key => JSON.stringify(current[key] === undefined ? null : current[key]) ===
            JSON.stringify(expected[key] === undefined ? null : expected[key])
@@ -84,26 +113,83 @@ function matchesExpected(event, expected) {
 
 const STALE = {error: "the calendar event changed after it was reviewed; read it again and request a new approval", stale_event: true};
 
-const calendar = calendarFor(input.calendar_name || "");
-if (!calendar) {
-  JSON.stringify({error: "no unique email-named calendar was found; set NEURAL_MAP_GOOGLE_CALENDAR_MACOS_NAME"});
-} else if (input.operation === "status") {
-  JSON.stringify({connected: true, calendar_name: calendar.name()});
-} else {
-  const event = input.event_id ? calendar.events().find(e => e.uid() === input.event_id) : null;
-  if (input.operation === "get") {
-    JSON.stringify(event ? {event: record(event), calendar_name: calendar.name()} : {error: "event not found"});
-  } else if (input.operation === "list") {
+const calendarName = input.calendar_name || "";
+if (input.operation === "status") {
+  const calendars = searchCalendars(calendarName);
+  const writeTarget = writeCalendar(calendarName);
+  if (!calendars.length) {
+    JSON.stringify({error: calendarName ? "calendar not found" : "no calendars are available"});
+  } else {
+    JSON.stringify({
+      connected: true,
+      calendar_name: calendarName || null,
+      calendar_count: calendars.length,
+      write_ready: !!writeTarget,
+      write_calendar_name: writeTarget ? writeTarget.name() : null
+    });
+  }
+} else if (input.operation === "list") {
+  const calendars = searchCalendars(calendarName);
+  if (!calendars.length) {
+    JSON.stringify({error: calendarName ? "calendar not found" : "no calendars are available"});
+  } else {
     const from = new Date(input.from);
     const to = new Date(input.to);
     const query = String(input.query || "").toLocaleLowerCase();
-    const rows = calendar.events().filter(e => {
-      const start = e.startDate();
-      const text = String(e.summary() || "").toLocaleLowerCase();
-      return start >= from && start <= to && (!query || text.includes(query));
-    }).sort((a, b) => a.startDate() - b.startDate()).slice(0, input.max_results || 50).map(record);
-    JSON.stringify({events: rows, calendar_name: calendar.name()});
-  } else if (input.operation === "create") {
+    let rows = [];
+    let recurrenceScanSkipped = [];
+    for (const calendar of calendars) {
+      const name = calendar.name();
+      // Ask Calendar.app to apply the date bounds. Materializing every event
+      // and filtering it in JavaScript creates one Apple Event per property
+      // and becomes unusably slow on long-lived synced calendars.
+      const candidates = calendar.events.whose({_and: [
+        {startDate: {_greaterThanEquals: from}},
+        {startDate: {_lessThanEquals: to}}
+      ]})();
+      // Calendar scripting exposes only the master date of a recurring series.
+      // Fetch those masters separately; Python expands their RRULEs into the
+      // requested window while honoring excludedDates.
+      let recurring = [];
+      let writable = false;
+      try { writable = !!calendar.writable(); } catch (_) {}
+      const emailNamed = /^[^@\s]+@[^@\s]+$/.test(name);
+      if (writable && (calendarName || !emailNamed)) {
+        try {
+          const allEvents = calendar.events();
+          const recurrenceRules = calendar.events.recurrence();
+          recurring = allEvents.filter((_, i) => String(recurrenceRules[i] || "").includes("FREQ"));
+        } catch (_) {}
+      } else if (writable && emailNamed) {
+        recurrenceScanSkipped.push({
+          calendar_name: name,
+          reason: "full-history recurrence scan skipped during all-calendar read; target this calendar_id explicitly to include its recurring series"
+        });
+      }
+      const seen = new Set();
+      const matches = candidates.concat(recurring).filter(e => {
+        const text = String(e.summary() || "").toLocaleLowerCase();
+        let uid = null;
+        try { uid = e.uid(); } catch (_) {}
+        if (uid && seen.has(uid)) return false;
+        if (uid) seen.add(uid);
+        return !query || text.includes(query);
+      }).map(e => record(e, name));
+      rows = rows.concat(matches);
+    }
+    rows.sort((a, b) => new Date(a.start.dateTime) - new Date(b.start.dateTime));
+    JSON.stringify({
+      events: rows.slice(0, Math.min(500, Math.max(100, (input.max_results || 50) * 3))),
+      calendar_name: calendarName || null,
+      calendar_count: calendars.length,
+      recurrence_scan_skipped: recurrenceScanSkipped
+    });
+  }
+} else if (input.operation === "create") {
+  const calendar = writeCalendar(calendarName);
+  if (!calendar) {
+    JSON.stringify({error: "no unique write calendar was found; set NEURAL_MAP_GOOGLE_CALENDAR_MACOS_NAME"});
+  } else {
     const props = {
       summary: input.title,
       startDate: eventDate(input.start),
@@ -114,11 +200,20 @@ if (!calendar) {
     if (input.location !== undefined) props.location = input.location || "";
     const created = app.Event(props);
     calendar.events.push(created);
-    JSON.stringify({event: record(created), calendar_name: calendar.name()});
-  } else if (input.operation === "update") {
+    JSON.stringify({event: record(created, calendar.name()), calendar_name: calendar.name()});
+  }
+} else if (["get", "update", "delete"].includes(input.operation)) {
+  const found = input.event_id ? findEvent(input.event_id, calendarName) : null;
+  if (!found) {
+    JSON.stringify({error: "event not found"});
+  } else if (input.operation === "get") {
+    JSON.stringify({event: record(found.event, found.calendarName), calendar_name: found.calendarName});
+  } else {
+    const event = found.event;
+    if (input.operation === "update") {
     if (!event) {
       JSON.stringify({error: "event not found"});
-    } else if (!matchesExpected(event, input.expected)) {
+    } else if (!matchesExpected(event, input.expected, found.calendarName)) {
       JSON.stringify(STALE);
     } else {
       if (input.title !== undefined) event.summary = input.title;
@@ -126,20 +221,21 @@ if (!calendar) {
       if (input.location !== undefined) event.location = input.location || "";
       if (input.start !== undefined) event.startDate = eventDate(input.start);
       if (input.end !== undefined) event.endDate = eventDate(input.end);
-      JSON.stringify({event: record(event), calendar_name: calendar.name()});
+      JSON.stringify({event: record(event, found.calendarName), calendar_name: found.calendarName});
     }
-  } else if (input.operation === "delete") {
+    } else {
     if (!event) {
       JSON.stringify({error: "event not found"});
-    } else if (!matchesExpected(event, input.expected)) {
+    } else if (!matchesExpected(event, input.expected, found.calendarName)) {
       JSON.stringify(STALE);
     } else {
       app.delete(event);
-      JSON.stringify({deleted: true, event_id: input.event_id, calendar_name: calendar.name()});
+      JSON.stringify({deleted: true, event_id: input.event_id, calendar_name: found.calendarName});
     }
-  } else {
-    JSON.stringify({error: "unsupported macOS Calendar operation"});
+    }
   }
+} else {
+  JSON.stringify({error: "unsupported macOS Calendar operation"});
 }
 '''
 
@@ -499,7 +595,7 @@ def _run_macos(payload: dict) -> dict:
             ["/usr/bin/osascript", "-l", "JavaScript", "-e", script],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=90,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -538,6 +634,56 @@ def _mac_record(event: dict) -> dict:
     return {**normalized, "etag": _mac_etag(normalized), "provider": "macos_calendar"}
 
 
+def _mac_occurrences(events: list[dict], from_value: str, to_value: str, maximum: int) -> list[dict]:
+    """Expand Calendar.app recurrence masters into bounded read-only instances."""
+    from dateutil.rrule import rrulestr
+
+    lower = datetime.fromisoformat(str(from_value).replace("Z", "+00:00"))
+    upper = datetime.fromisoformat(str(to_value).replace("Z", "+00:00"))
+    rows: list[dict] = []
+    for event in events:
+        rule = str(event.get("recurrence") or "").strip()
+        if not rule:
+            rows.append(event)
+            continue
+        start_raw = str((event.get("start") or {}).get("dateTime") or "")
+        end_raw = str((event.get("end") or {}).get("dateTime") or "")
+        try:
+            master_start = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+            master_end = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+            recurrence = rrulestr(rule, dtstart=master_start)
+            occurrences = recurrence.between(lower, upper, inc=True)
+        except (TypeError, ValueError, OverflowError):
+            # Preserve the master rather than silently dropping an unfamiliar
+            # provider-specific recurrence rule.
+            rows.append(event)
+            continue
+        excluded = set()
+        for value in event.get("excluded_dates") or []:
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                excluded.add(parsed.astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                continue
+        duration = master_end - master_start
+        master_id = str(event.get("id") or "")
+        for occurrence in occurrences:
+            if occurrence.astimezone(timezone.utc) in excluded:
+                continue
+            occurrence_end = occurrence + duration
+            occurrence_key = occurrence.astimezone(timezone.utc).isoformat()
+            rows.append({
+                **event,
+                "id": f"{master_id}::occurrence::{occurrence_key}",
+                "recurring": True,
+                "recurring_master_id": master_id,
+                "start": {"dateTime": occurrence.isoformat()},
+                "end": {"dateTime": occurrence_end.isoformat()},
+            })
+    rows.sort(key=lambda row: str((row.get("start") or {}).get("dateTime") or (row.get("start") or {}).get("date") or ""))
+    return rows[:maximum]
+
+
 def _mac_status(args: dict | None = None) -> dict:
     result = _run_macos(_mac_payload("status", args))
     if result.get("error"):
@@ -561,11 +707,18 @@ def _mac_list(args: dict | None = None) -> dict:
     result = _run_macos(payload)
     if result.get("error"):
         return result
+    events = _mac_occurrences(
+        result.get("events") or [],
+        payload["from"],
+        payload["to"],
+        payload["max_results"],
+    )
     return {
         "calendar_id": result.get("calendar_name"),
         "provider": "macos_calendar",
         "timeZone": config.GOOGLE_CALENDAR_TIMEZONE,
-        "events": [_mac_record(event) for event in result.get("events") or []],
+        "events": [_mac_record(event) for event in events],
+        "recurrence_scan_skipped": result.get("recurrence_scan_skipped") or [],
         "next_page_token": None,
     }
 
