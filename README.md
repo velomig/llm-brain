@@ -41,6 +41,11 @@ ollama list            # pick any chat model you like
 
 ## Personalize it
 
+Repository examples and test portfolios use illustrative symbols and quantities;
+they do not describe the owner’s investments or plans. Replace `example-user`
+in the sample launchd plist with your local account before installing it.
+
+
 The assistant is calibrated by personal markdown files (`aboutme.md`,
 `source-of-truth.md`, domain files like `finance.md`) that are **gitignored**
 because they contain your private details. See [examples/](examples/) for
