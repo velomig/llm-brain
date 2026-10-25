@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import json
 import os
 import threading
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 import config
@@ -20,7 +22,7 @@ from brain.toolkit.paths import (
     trusted_prompt_path,
     trusted_prompt_update_target,
 )
-from brain.utils import file_lock
+from brain.utils import file_lock, path_lock, replace_private
 
 PERMISSIONS_FILE = config.DB_DIR / ".neural_map_tool_permissions.json"
 AUDIT_FILE = config.DB_DIR / ".neural_map_tool_audit.json"
@@ -234,7 +236,13 @@ def _file_text(path: Path, max_bytes: int = 0) -> str | None:
             if hits is not None:
                 hits.append(True)
             return None
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1) if max_bytes else handle.read()
+        if max_bytes and len(raw) > max_bytes:
+            hits = getattr(_preview_truncation, "hits", None)
+            if hits is not None:
+                hits.append(True)
+            return None
     except OSError:
         return None
     if b"\x00" in raw[:4096]:
@@ -249,7 +257,10 @@ def _file_snapshot(path: Path) -> dict:
     if not path.is_file():
         return {**snap, "undoable": False, "reason": "path is not a file"}
     try:
-        raw = path.read_bytes()
+        if path.stat().st_size > config.MAX_TOOL_UNDO_BYTES:
+            return {**snap, "undoable": False, "reason": "file is too large to snapshot"}
+        with path.open("rb") as handle:
+            raw = handle.read(config.MAX_TOOL_UNDO_BYTES + 1)
     except OSError as exc:
         return {**snap, "undoable": False, "reason": str(exc)}
     if len(raw) > config.MAX_TOOL_UNDO_BYTES:
@@ -264,7 +275,7 @@ def _restore_file_snapshot(snapshot: dict) -> dict:
     if snapshot.get("exists"):
         raw = base64.b64decode(str(snapshot.get("bytes_b64") or ""))
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw)
+        replace_private(path, raw)
         return {"ok": True, "path": str(path), "restored": True}
     if path.exists():
         path.unlink()
@@ -281,19 +292,30 @@ def _memory_model(args: dict | None = None) -> str | None:
 
 
 def _memory_records(ids: list[str], model: str | None = None) -> list[dict]:
-    wanted = set(ids)
-    return [r for r in store.list_records_all(model) if r.get("id") in wanted]
+    rows = []
+    ids = list({i for i in ids if i})
+    if not ids:
+        return rows
+    for text_only in (False, True):
+        data = store._collection(model, text_only=text_only).get(
+            ids=ids, include=["documents", "metadatas", "embeddings"],
+        )
+        for i, memory_id in enumerate(data["ids"]):
+            rows.append({"id": memory_id, "text": data["documents"][i],
+                         "meta": data["metadatas"][i],
+                         "embedding": list(data["embeddings"][i]),
+                         "mode": "text_only" if text_only else "vector"})
+    return sorted(rows, key=lambda row: (row["id"], row["mode"]))
 
 
 def _restore_memory_records(records: list[dict], model: str | None = None) -> dict:
-    restored = []
+    prepared = []
     for rec in records:
         memory_id = str(rec.get("id") or "")
         if not memory_id:
             continue
         meta = rec.get("meta") or {}
-        store.delete_all([memory_id], model=model)
-        extra = {k: v for k, v in meta.items() if k not in memory_tools.BASE_META_KEYS}
+        extra = {k: v for k, v in meta.items() if k not in {"category", "importance", "date", "source", "access_count"}}
         unit = MemoryUnit(
             id=memory_id,
             text=str(rec.get("text") or ""),
@@ -304,30 +326,75 @@ def _restore_memory_records(records: list[dict], model: str | None = None) -> di
             access_count=int(meta.get("access_count", 0) or 0),
             extra=extra,
         )
-        try:
-            embedding = embed_document(unit.text, model=model)
-            store.add(unit, embedding, model=model)
-        except (EmbeddingUnavailable, Exception):
-            store.add(unit, text_only_embedding(), model=model, text_only=True)
-        restored.append(memory_id)
-    return {"ok": True, "restored": restored}
+        text_only = rec.get("mode") == "text_only"
+        embedding = rec.get("embedding")
+        if embedding is None:
+            try:
+                embedding = text_only_embedding() if text_only else embed_document(unit.text, model=model)
+            except EmbeddingUnavailable:
+                embedding, text_only = text_only_embedding(), True
+        prepared.append((unit, embedding, text_only))
+    for unit, embedding, text_only in prepared:
+        store.restore_record(unit, embedding, model=model, text_only=text_only)
+        store.delete([unit.id], model=model, text_only=not text_only)
+    return {"ok": True, "restored": [unit.id for unit, _, _ in prepared]}
 
 
 def _json_file_snapshot(path: Path) -> dict:
-    snap = {"kind": "json_file", "path": str(path), "exists": path.exists(), "undoable": True}
-    if path.exists():
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            return {**snap, "undoable": False, "reason": str(exc)}
-        if len(raw) > config.MAX_TOOL_UNDO_BYTES:
-            return {**snap, "undoable": False, "reason": "state file is too large to snapshot"}
-        snap["bytes_b64"] = base64.b64encode(raw).decode("ascii")
-    return snap
+    return {**_file_snapshot(path), "kind": "json_file"}
 
 
 def _restore_json_file_snapshot(snapshot: dict) -> dict:
-    return _restore_file_snapshot(snapshot)
+    if snapshot.get("kind") != "local_record":
+        return {"error": "legacy whole-file undo is unsafe; restore the record manually"}
+    path = Path(snapshot["path"])
+    data = local_state._read_json_file(path)
+    rows = data.setdefault(snapshot["key"], [])
+    rows[:] = [row for row in rows if row.get("id") != snapshot["id"]]
+    if snapshot["record"] is not None:
+        rows.append(snapshot["record"])
+    local_state._write_json_file(path, data)
+    return {"ok": True, "id": snapshot["id"], "restored": True}
+
+
+def _local_record_snapshot(tool: str, args: dict) -> dict:
+    if tool == "upsert_contact":
+        path, key = local_state.CONTACTS_FILE, "contacts"
+        record_id = local_state._stable_id("contact", str(args.get("name") or "").strip())
+    else:
+        path, key = local_state.CALENDAR_FILE, "events"
+        start = local_state._parse_event_dt(str(args.get("start") or "").strip())
+        record_id = local_state._stable_id("event", f"{str(args.get('title') or '').strip()}:{start.isoformat()}")
+    rows = local_state._read_json_file(path).get(key) or []
+    return {"kind": "local_record", "path": str(path), "key": key, "id": record_id,
+            "record": next((row for row in rows if row.get("id") == record_id), None), "undoable": True}
+
+
+def action_lock(action: dict):
+    """Use the same target lock for approval, direct writes, and undo."""
+    tool, args = action.get("tool"), action.get("args") or {}
+    if tool in MEMORY_UNDO_TOOLS:
+        return store.mutation_lock()
+    if tool == "upsert_contact":
+        return local_state._contacts_lock()
+    if tool == "create_calendar_event":
+        return local_state._calendar_lock()
+    if tool == "write_file":
+        try:
+            target = resolve_tool_path(str(args.get("filename") or ""))
+        except (ValueError, PermissionError):
+            # Invalid targets are rejected by the handler with its normal result shape.
+            return nullcontext()
+    elif tool == "update_source_of_truth":
+        try:
+            target = source_truth.target_path(args)
+        except (ValueError, PermissionError):
+            return nullcontext()
+    elif tool == "update_will_perspective":
+        target = config.WILL_PERSPECTIVE_PATH.resolve(strict=False)
+    else:
+        return nullcontext()
+    return path_lock(target, config.DB_DIR, prefix="trusted_prompt")
 
 
 def preview_action(tool: str, args: dict | None = None) -> dict:
@@ -538,10 +605,8 @@ def snapshot_action(tool: str, args: dict | None = None) -> dict:
             return _file_snapshot(source_truth.target_path(args))
         if tool == "update_will_perspective":
             return _file_snapshot(config.WILL_PERSPECTIVE_PATH.resolve(strict=False))
-        if tool in {"upsert_contact"}:
-            return _json_file_snapshot(local_state.CONTACTS_FILE)
-        if tool in {"create_calendar_event"}:
-            return _json_file_snapshot(local_state.CALENDAR_FILE)
+        if tool in {"upsert_contact", "create_calendar_event"}:
+            return _local_record_snapshot(tool, args)
         if tool == "complete_reminder":
             return {"kind": "memory_records", "records": _memory_records([str(args.get("id") or "")]), "undoable": True}
         if tool in {"update_memory", "pin_memory", "mark_memory_wrong"}:
@@ -577,15 +642,12 @@ _FRESHNESS_TOOLS = {
     "update_will_perspective",
     "complete_reminder",
     "upsert_contact",
+    "create_calendar_event",
     "update_memory",
     "pin_memory",
     "mark_memory_wrong",
     "merge_memories",
 }
-# upsert_contact is compared on preview only: its snapshot is the whole
-# contacts file, and an unrelated concurrent contact must not invalidate this
-# approval. The preview captures the one contact this action would overwrite.
-_FRESHNESS_PREVIEW_ONLY = {"upsert_contact"}
 # Bookkeeping bumped by ordinary retrieval (store.reinforce): a memory that was
 # merely recalled since review is not stale, only one whose content changed.
 _VOLATILE_META_KEYS = {"access_count", "last_accessed"}
@@ -614,12 +676,8 @@ def refresh_if_stale(action: dict) -> dict | None:
     args = action.get("args") or {}
     preview = preview_action(tool, args)
     snapshot = snapshot_action(tool, args)
-    if tool in _FRESHNESS_PREVIEW_ONLY:
-        fresh = _stable_view(preview)
-        reviewed = _stable_view(action.get("preview") or {})
-    else:
-        fresh = (_stable_view(preview), _stable_view(snapshot))
-        reviewed = (_stable_view(action.get("preview") or {}), _stable_view(action.get("snapshot") or {}))
+    fresh = (_stable_view(preview), _stable_view(snapshot))
+    reviewed = (_stable_view(action.get("preview") or {}), _stable_view(action.get("snapshot") or {}))
     if fresh == reviewed:
         return None
     return {
@@ -638,7 +696,38 @@ def preview_truncated(action: dict) -> bool:
     return bool((action.get("preview") or {}).get("preview_truncated"))
 
 
+MEMORY_UNDO_TOOLS = {
+    "complete_reminder", "update_memory", "pin_memory", "mark_memory_wrong",
+    "merge_memories", "create_reminder", "review_action_package",
+}
+
+
+def memory_post_snapshot(tool: str, args: dict, result: dict) -> dict:
+    ids = list(args.get("ids") or []) if tool == "merge_memories" else []
+    if args.get("id"):
+        ids.append(str(args["id"]))
+    if result.get("id"):
+        ids.append(str(result["id"]))
+    ids = sorted(set(ids))
+    model = _memory_model(args)
+    return {"ids": ids, "model": model,
+            "records": _stable_view(_memory_records(ids, model=model))}
+
+
+def post_action_snapshot(tool: str, args: dict) -> dict:
+    snapshot = snapshot_action(tool, args)
+    if snapshot.get("kind") == "file" and "bytes_b64" in snapshot:
+        raw = base64.b64decode(snapshot.pop("bytes_b64"))
+        snapshot["sha256"] = hashlib.sha256(raw).hexdigest()
+    return snapshot
+
+
 def undo_action(action: dict) -> dict:
+    with action_lock(action):
+        return _undo_action_locked(action)
+
+
+def _undo_action_locked(action: dict) -> dict:
     if action.get("status") != "approved":
         return {"error": "only approved actions can be undone"}
     if action.get("undo_result"):
@@ -646,6 +735,20 @@ def undo_action(action: dict) -> dict:
     tool = str(action.get("tool") or "")
     result = action.get("result") or {}
     snapshot = action.get("approval_snapshot") or action.get("snapshot") or {}
+    if tool in MEMORY_UNDO_TOOLS:
+        after = action.get("memory_post_snapshot")
+        if not after or not after.get("ids"):
+            return {"error": "no safe post-action memory snapshot is available; restore manually"}
+        current = _stable_view(_memory_records(after["ids"], model=after.get("model")))
+        if current != after["records"]:
+            return {"error": "memory changed since this action; undo would overwrite newer changes"}
+    if tool in {"write_file", "update_source_of_truth", "update_will_perspective", "upsert_contact", "create_calendar_event"}:
+        after = action.get("post_snapshot")
+        current = post_action_snapshot(tool, action.get("args") or {})
+        if not after or not after.get("undoable"):
+            return {"error": "no safe post-action snapshot is available; restore this change manually"}
+        if current != after:
+            return {"error": "target changed since this action; undo would overwrite newer changes"}
     if tool == "update_will_perspective":
         restored = _restore_file_snapshot(snapshot)
         if restored.get("ok"):

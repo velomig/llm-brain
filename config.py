@@ -579,6 +579,10 @@ GENERATION_REPEAT_MAX_PERIOD = _env_int("NEURAL_MAP_GENERATION_REPEAT_MAX_PERIOD
 MAX_MEMORY_CHARS = 50_000
 MAX_DOCUMENT_CHARS = _env_int("NEURAL_MAP_MAX_DOCUMENT_CHARS", 25_000_000)   # .md/.txt upload text cap
 MAX_UPLOAD_BYTES = _env_int("NEURAL_MAP_MAX_UPLOAD_BYTES", 25_000_000)
+PDF_TIMEOUT_SECONDS = max(1, _env_int("NEURAL_MAP_PDF_TIMEOUT_SECONDS", 30))
+PDF_MEMORY_MB = max(64, _env_int("NEURAL_MAP_PDF_MEMORY_MB", 512))
+PDF_MAX_PAGES = max(1, _env_int("NEURAL_MAP_PDF_MAX_PAGES", 2000))
+PDF_MAX_TEXT_CHARS = max(1, _env_int("NEURAL_MAP_PDF_MAX_TEXT_CHARS", 5_000_000))
 # base64 is ~33% larger than the raw file; keep this tied to the raw-byte cap by default.
 MAX_UPLOAD_BASE64_CHARS = _env_int("NEURAL_MAP_MAX_UPLOAD_B64", MAX_UPLOAD_BYTES * 4 // 3 + 8)
 # Whole HTTP request cap, checked before FastAPI/Pydantic parse large JSON bodies.

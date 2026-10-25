@@ -17,6 +17,7 @@ a human-readable archive of the same data.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -98,9 +99,68 @@ def save_backup(reason: str, model: str | None = None) -> Path:
 
 
 def _payload(data: dict) -> dict:
-    payload = (data or {}).get("neural_map_export")
+    payload = data.get("neural_map_export") if isinstance(data, dict) else None
     if not isinstance(payload, dict) or not isinstance(payload.get("memories"), list):
         raise ValueError("not a Neural Map export (missing 'neural_map_export.memories')")
+    return payload
+
+
+def _validated_import_payload(data: dict) -> dict:
+    """Validate the entire archive before embedding or changing either store."""
+    payload = _payload(data)
+    version = payload.get("version", EXPORT_VERSION)  # early exports omitted the version
+    if type(version) is not int or version != EXPORT_VERSION:
+        raise ValueError("unsupported export version")
+    schema = payload.get("schema_version", SCHEMA_VERSION)
+    if type(schema) is not int or not 1 <= schema <= SCHEMA_VERSION:
+        raise ValueError("unsupported memory schema version")
+    records = payload["memories"]
+    if "count" in payload and (type(payload["count"]) is not int or payload["count"] != len(records)):
+        raise ValueError("export count does not match memories")
+    ids = set()
+    for row in records:
+        if not isinstance(row, dict):
+            raise ValueError("every memory must be an object")
+        for key in ("id", "text"):
+            if not isinstance(row.get(key), str) or not row[key].strip():
+                raise ValueError(f"every memory needs a nonempty {key}")
+        if row["id"] in ids:
+            raise ValueError("duplicate memory id in export")
+        ids.add(row["id"])
+        for key, value in row.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("memory metadata keys must be nonempty text")
+            if value is None and key in {"source", "date"}:
+                continue
+            if not isinstance(value, (str, int, float, bool)) or isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"invalid memory field: {key}")
+        for key in ("category", "date", "source", "source_type"):
+            if key in row and row[key] is not None and not isinstance(row[key], str):
+                raise ValueError(f"{key} must be text")
+        if "importance" in row and (type(row["importance"]) is not int or not 1 <= row["importance"] <= 5):
+            raise ValueError("importance must be an integer from 1 to 5")
+        if "access_count" in row and (type(row["access_count"]) is not int or row["access_count"] < 0):
+            raise ValueError("access_count must be a nonnegative integer")
+        if "pinned" in row and type(row["pinned"]) is not bool:
+            raise ValueError("pinned must be a boolean")
+        if "schema_version" in row and (type(row["schema_version"]) is not int or not 1 <= row["schema_version"] <= SCHEMA_VERSION):
+            raise ValueError("unsupported record schema version")
+        if "mode" in row and row["mode"] not in {"vector", "text_only"}:
+            raise ValueError("invalid memory mode")
+    edges = payload.get("graph", [])
+    if not isinstance(edges, list):
+        raise ValueError("graph must be a list")
+    for row in edges:
+        if not isinstance(row, dict):
+            raise ValueError("every graph edge must be an object")
+        for key in ("subject", "relation", "object", "fact_id"):
+            if not isinstance(row.get(key), str) or not row[key].strip():
+                raise ValueError(f"every graph edge needs a nonempty {key}")
+        if row["fact_id"] not in ids:
+            raise ValueError("graph edge references a memory outside this export")
+        for key in ("collection", "date"):
+            if row.get(key) is not None and not isinstance(row[key], str):
+                raise ValueError(f"graph {key} must be text")
     return payload
 
 
@@ -199,8 +259,8 @@ def import_data(data: dict, model: str | None = None, replace: bool = False) -> 
     it works regardless of which model produced the backup. Returns
     {"memories", "edges", "mode"}.
     """
-    payload = _payload(data)
-    units = [_unit_from_record(r) for r in payload["memories"] if isinstance(r, dict) and r.get("id")]
+    payload = _validated_import_payload(data)
+    units = [_unit_from_record(r) for r in payload["memories"]]
     imported_ids = {u.id for u in units}
 
     text_only = False
@@ -250,11 +310,10 @@ def import_data(data: dict, model: str | None = None, replace: bool = False) -> 
         # the destination collection. Rewrite each restored edge's collection to the
         # actual landing collection (vector or text-only) so graph recall can resolve
         # it even when the backup came from a different embedding model or embeddings
-        # are currently unavailable. Edges whose fact wasn't imported keep their
-        # original collection (we can't know where that fact lives).
+        # are currently unavailable. Validation rejects edges outside this archive.
         destination = store.collection_name(model, text_only=text_only)
         edge_rows = [
-            {**row, "collection": destination} if isinstance(row, dict) and row.get("fact_id") in imported_ids else row
+            {**row, "collection": destination}
             for row in (payload.get("graph") or [])
         ]
         edges = graph.import_edges(edge_rows)

@@ -44,6 +44,7 @@ def _store_memory_unit(unit: MemoryUnit, model: str | None = None) -> tuple[str,
     return unit.id, "vector"
 
 
+@store.memory_transaction
 def update_memory(args: dict) -> dict:
     model = _tool_model(args)
     memory_id = str((args or {}).get("id", "")).strip()
@@ -91,6 +92,7 @@ def update_memory(args: dict) -> dict:
     return {"id": memory_id, "mode": mode, "category": unit.category, "importance": unit.importance}
 
 
+@store.memory_transaction
 def pin_memory(args: dict) -> dict:
     model = _tool_model(args)
     memory_id = str((args or {}).get("id", "")).strip()
@@ -103,6 +105,7 @@ def pin_memory(args: dict) -> dict:
     return {"id": memory_id, "pinned": pinned}
 
 
+@store.memory_transaction
 def mark_memory_wrong(args: dict) -> dict:
     model = _tool_model(args)
     memory_id = str((args or {}).get("id", "")).strip()
@@ -115,6 +118,7 @@ def mark_memory_wrong(args: dict) -> dict:
     return {"id": memory_id, "superseded": True}
 
 
+@store.memory_transaction
 def merge_memories(args: dict) -> dict:
     model = _tool_model(args)
     raw_ids = (args or {}).get("ids") or []

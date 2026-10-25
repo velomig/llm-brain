@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
-import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,19 +11,12 @@ from brain import store
 from brain.embeddings import EmbeddingUnavailable, embed_document, text_only_embedding
 from brain.memory import MemoryUnit, now_iso
 from brain.toolkit.email import EMAIL_RE
-from brain.utils import file_lock
+from brain.utils import file_lock, replace_private
 
 CONTACTS_FILE = config.DB_DIR / ".neural_map_contacts.json"
 CALENDAR_FILE = config.DB_DIR / ".neural_map_calendar.json"
 
-# Read-modify-write on these files must hold the matching pair of locks:
-# the threading.Lock serializes threads in this process, the flock serializes
-# other processes (Uvicorn workers, background jobs). Without them, two
-# concurrent upserts each read the old file and the second replace drops the
-# first one's record. Plain reads stay lockless — _write_json_file replaces
-# atomically, so a reader always sees a complete file.
-_CONTACTS_LOCK = threading.Lock()
-_CALENDAR_LOCK = threading.Lock()
+# Writers and undo share reentrant thread/process locks. Plain reads see atomic files.
 
 
 def _contacts_lock():
@@ -119,9 +110,7 @@ def _read_json_file(path: Path) -> dict:
 
 def _write_json_file(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{time.monotonic_ns()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    replace_private(path, json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True))
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -145,7 +134,7 @@ def upsert_contact(args: dict) -> dict:
         "notes": str((args or {}).get("notes", "")).strip()[:1000],
         "updated_at": now_iso(),
     }
-    with _CONTACTS_LOCK, _contacts_lock():
+    with _contacts_lock():
         data = _read_json_file(CONTACTS_FILE)
         contacts = data.setdefault("contacts", [])
         contacts[:] = [c for c in contacts if c.get("id") != cid]
@@ -192,6 +181,8 @@ def create_calendar_event(args: dict) -> dict:
         return {"error": "start must be an ISO date or datetime"}
     end_raw = str((args or {}).get("end", "")).strip()
     end_dt = _parse_event_dt(end_raw, start_dt + timedelta(hours=1)) if end_raw else start_dt + timedelta(hours=1)
+    if end_dt is None:
+        return {"error": "end must be an ISO date or datetime"}
     if end_dt < start_dt:
         return {"error": "end must be after start"}
     eid = _stable_id("event", f"{title}:{start_dt.isoformat()}")
@@ -203,7 +194,7 @@ def create_calendar_event(args: dict) -> dict:
         "notes": str((args or {}).get("notes", "")).strip()[:1000],
         "updated_at": now_iso(),
     }
-    with _CALENDAR_LOCK, _calendar_lock():
+    with _calendar_lock():
         data = _read_json_file(CALENDAR_FILE)
         events = data.setdefault("events", [])
         events[:] = [e for e in events if e.get("id") != eid]

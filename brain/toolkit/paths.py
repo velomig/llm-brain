@@ -79,10 +79,34 @@ def reserved_code_path(resolved: Path) -> bool:
     base = config.BASE_DIR.resolve(strict=False)
     if not (is_under(resolved, base) or resolved == base):
         return False
-    if resolved.suffix.lower() in {".py", ".pyc", ".pth", ".so"}:
+    if resolved.suffix.lower() in {
+        ".py", ".pyc", ".pth", ".so", ".dylib", ".sh", ".bash", ".zsh",
+        ".command", ".applescript", ".scpt", ".plist", ".js", ".mjs",
+        ".cjs", ".toml", ".ini", ".cfg", ".yaml", ".yml",
+    }:
         return True
     rel_parts = resolved.relative_to(base).parts if resolved != base else ()
-    return bool(rel_parts) and rel_parts[0] in {".claude", "web"}
+    if any(part in {".claude", ".codex", ".agents", "web", "brain", "tests", "launchd"}
+           or part.lower().endswith(".app") for part in rel_parts):
+        return True
+    name = resolved.name.lower()
+    if name.startswith(("requirements", "dockerfile", "makefile")) or name in {
+        "pipfile", "pipfile.lock", "uv.lock", "poetry.lock", "package.json",
+        "package-lock.json", "agents.md", "claude.md", "procfile",
+    }:
+        return True
+    # Extensionless launchers and scripts are executable inputs too.
+    if not resolved.suffix:
+        return True
+    try:
+        if resolved.stat().st_mode & 0o111:
+            return True
+        with resolved.open("rb") as handle:
+            return handle.read(2) == b"#!"
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def trusted_prompt_path(resolved: Path) -> bool:

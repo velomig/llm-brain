@@ -60,16 +60,26 @@ class _RedactTokenQueryFilter(logging.Filter):
     and uvicorn's access log records the full request path — without this the
     only auth secret is persisted in plaintext to the logs."""
 
-    _pattern = re.compile(r"(token=)[^&\s\"]+")
+    _pattern = re.compile(r"([^?&\s\"=]+)=([^&\s\"]*)")
+
+    @classmethod
+    def _redact(cls, value):
+        from urllib.parse import unquote_plus
+
+        if not isinstance(value, str):
+            return value
+        return cls._pattern.sub(
+            lambda m: m[1] + "=[redacted]" if unquote_plus(m[1]) == "token" else m[0],
+            value,
+        )
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.args:
-            record.args = tuple(
-                self._pattern.sub(r"\1[redacted]", arg) if isinstance(arg, str) else arg
-                for arg in record.args
-            )
+            record.args = ({k: self._redact(v) for k, v in record.args.items()}
+                           if isinstance(record.args, dict)
+                           else tuple(self._redact(arg) for arg in record.args))
         if isinstance(record.msg, str):
-            record.msg = self._pattern.sub(r"\1[redacted]", record.msg)
+            record.msg = self._redact(record.msg)
         return True
 
 
@@ -2261,6 +2271,13 @@ def preview_ingest(req: IngestReq):
 
 @app.post("/api/ingest")
 def ingest_markdown(req: IngestReq):
+    from brain.documents import ingestion_lock
+
+    with ingestion_lock("upload:" + req.filename, req.model):
+        return _ingest_upload_locked(req)
+
+
+def _ingest_upload_locked(req: IngestReq):
     """Chunk an uploaded document and store it (exact re-upload replaces by content key)."""
     try:
         text, source, sensory_kind, sensory_data = _ingest_payload(req)

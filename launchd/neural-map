@@ -1,0 +1,34 @@
+#!/bin/bash
+# Open the existing launchd-managed server, including during a cold login.
+set -u
+
+BASE_URL="http://127.0.0.1:8000"
+AGENT_PLIST="/Library/LaunchAgents/com.neuralmap.server.plist"
+SERVICE="gui/$(id -u)/com.neuralmap.server"
+TOKEN="$(/usr/bin/plutil -extract EnvironmentVariables.NEURAL_MAP_TOKEN raw -o - "$AGENT_PLIST" 2>/dev/null || true)"
+URL="$BASE_URL"
+if [[ -n "$TOKEN" ]]; then URL="$BASE_URL/?token=$TOKEN"; fi
+
+server_ready() {
+  # Keep the authentication header off curl's command line.
+  printf 'header = "X-Auth-Token: %s"\n' "$TOKEN" |
+    /usr/bin/curl --config - -fs -o /dev/null --max-time 1 "$BASE_URL/api/build"
+}
+
+if ! server_ready; then
+  # Never launch a competing Python process while the login service is loading.
+  if ! /bin/launchctl print "$SERVICE" >/dev/null 2>&1; then
+    /bin/launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" || exit 1
+  fi
+  /bin/launchctl kickstart "$SERVICE" || exit 1
+  deadline=$((SECONDS + 120))
+  while ! server_ready; do
+    if (( SECONDS >= deadline )); then
+      /usr/bin/osascript -e 'display dialog "LLM Brain is still starting. Try opening it again in a moment. Startup logs are in ~/Library/Logs/neuralmap/." buttons {"OK"} default button "OK" with title "LLM Brain"'
+      exit 1
+    fi
+    sleep 0.5
+  done
+fi
+
+/usr/bin/open -a "Google Chrome" "$URL"

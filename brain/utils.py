@@ -12,11 +12,23 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-_PATH_LOCKS_GUARD = threading.Lock()
-_PATH_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+_FILE_LOCKS: dict[str, threading.RLock] = {}
+_HELD_FILE_LOCKS = threading.local()
 
 
-def replace_private(path: Path, text: str) -> None:
+def _reset_child_locks() -> None:
+    # A forked child owns none of the parent's critical sections.
+    global _FILE_LOCKS_GUARD, _FILE_LOCKS, _HELD_FILE_LOCKS
+    _FILE_LOCKS_GUARD = threading.Lock()
+    _FILE_LOCKS = {}
+    _HELD_FILE_LOCKS = threading.local()
+
+
+os.register_at_fork(after_in_child=_reset_child_locks)
+
+
+def replace_private(path: Path, text: str | bytes) -> None:
     """Atomically replace `path` with `text`, keeping the file owner-only.
 
     Path.write_text on the temp file applies the process umask (typically
@@ -30,9 +42,9 @@ def replace_private(path: Path, text: str) -> None:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "wb") as handle:
             fd = -1
-            handle.write(text)
+            handle.write(text.encode("utf-8") if isinstance(text, str) else text)
         os.replace(tmp, path)
     except OSError:
         if fd >= 0:
@@ -64,15 +76,27 @@ def clean_text(value, limit: int = 240) -> str:
 
 @contextmanager
 def file_lock(lock_file: Path):
-    """Exclusive cross-process lock via fcntl.flock on a dedicated lock file.
+    """Reentrant thread and process lock, held through nested transactions."""
+    key = str(Path(lock_file).resolve(strict=False))
+    with _FILE_LOCKS_GUARD:
+        thread_lock = _FILE_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        held = getattr(_HELD_FILE_LOCKS, "keys", None)
+        if held is None:
+            held = _HELD_FILE_LOCKS.keys = set()
+        if key in held:
+            yield
+            return
+        with _flock(Path(key)):
+            held.add(key)
+            try:
+                yield
+            finally:
+                held.remove(key)
 
-    The one shared implementation behind every state module's `_state_lock()`:
-    flock serializes the web server against background jobs (reflect, sleep,
-    will) across processes. Callers pair it with a module-level threading.Lock
-    so threads within one process queue on that instead of churning file
-    descriptors here. Blocks until the lock is granted; always unlocks and
-    closes, even when the guarded block raises.
-    """
+
+@contextmanager
+def _flock(lock_file: Path):
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     fh = lock_file.open("a+", encoding="utf-8")
     try:
@@ -97,11 +121,9 @@ def path_lock(target: Path, lock_dir: Path, prefix: str = "path"):
     user-authored target file.
     """
     key = str(Path(target).resolve(strict=False))
-    with _PATH_LOCKS_GUARD:
-        thread_lock = _PATH_LOCKS.setdefault(key, threading.Lock())
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
     lock_file = Path(lock_dir) / f".neural_map_{prefix}_{digest}.lock"
-    with thread_lock, file_lock(lock_file):
+    with file_lock(lock_file):
         yield
 
 

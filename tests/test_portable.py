@@ -147,9 +147,7 @@ def test_import_remaps_edges_to_destination_collection():
     assert graph.fact_ids_for({"ollama"}, collection=FOREIGN_COLLECTION) == []   # no longer foreign
 
 
-def test_import_keeps_collection_for_unimported_fact():
-    # An edge whose fact_id is NOT among the imported memories can't be remapped
-    # (we don't know where that fact lives), so its collection is left untouched.
+def test_import_rejects_graph_edges_for_unimported_facts():
     data = {
         "neural_map_export": {
             "version": EXPORT_VERSION, "exported_at": "x", "schema_version": 1,
@@ -158,9 +156,9 @@ def test_import_keeps_collection_for_unimported_fact():
                        "fact_id": "ghost-not-imported", "collection": FOREIGN_COLLECTION, "date": None}],
         }
     }
-    import_data(data)
-    rows = graph.export_edges()
-    assert rows[0]["collection"] == FOREIGN_COLLECTION
+    with pytest.raises(ValueError, match="outside this export"):
+        import_data(data)
+    assert graph.export_edges() == []
 
 
 # --- replace vs merge ---------------------------------------------------------

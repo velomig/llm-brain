@@ -469,8 +469,16 @@ def chat_with_tools(
     model: str | None = None,
     num_ctx: int | None = None,
     max_iters: int = 4,
+    outcome: dict | None = None,
+    stop_on_pending: bool = False,
 ) -> tuple[str, list[dict]]:
-    """Chat loop where the model may call tools. Returns (reply, tools_used)."""
+    """Return (reply, tools_used), optionally recording the loop's stop reason.
+
+    Background runs stop at an approval boundary; interactive callers retain
+    the existing behavior unless stop_on_pending is explicitly enabled.
+    """
+    if outcome is not None:
+        outcome["stop_reason"] = "completed"
     messages: list[dict] = [{"role": "system", "content": system}]
     if history:
         messages.extend(history)
@@ -500,7 +508,13 @@ def chat_with_tools(
                 result = {"error": str(exc)}
             used.append({"tool": tname, "args": targs, "result": result})
             messages.append({"role": "tool", "name": tname, "content": json.dumps(result, ensure_ascii=True)})
+            if stop_on_pending and isinstance(result, dict) and result.get("pending"):
+                if outcome is not None:
+                    outcome["stop_reason"] = "awaiting_approval"
+                return "Waiting for approval before continuing.", used
 
+    if outcome is not None:
+        outcome["stop_reason"] = "budget_exhausted"
     # Out of iterations — ask once more without tools to force a written answer.
     messages.append({"role": "user", "content": _TOOL_FINAL_ANSWER_PROMPT})
     content, _ = _chat_message(name, messages, options)

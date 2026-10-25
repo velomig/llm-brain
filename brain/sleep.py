@@ -116,6 +116,8 @@ def _dream_candidates(model: str | None = None) -> list[dict]:
 
 
 def _dream_pairs(rows: list[dict], max_dreams: int) -> list[tuple[dict, dict]]:
+    if max_dreams <= 0:
+        return []
     pairs: list[tuple[dict, dict]] = []
     used: set[str] = set()
     for left in rows:

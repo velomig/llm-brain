@@ -5,6 +5,7 @@ from pathlib import Path
 
 import config
 from brain import sensory
+from brain.utils import path_lock
 from brain.toolkit.paths import (
     reserved_code_path,
     resolve_tool_path,
@@ -78,6 +79,15 @@ def read_file(args: dict) -> dict:
 
 
 def write_file(args: dict) -> dict:
+    try:
+        path = resolve_tool_path(str((args or {}).get("filename", "")))
+        with path_lock(path, config.DB_DIR, prefix="trusted_prompt"):
+            return _write_file_locked(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _write_file_locked(args: dict) -> dict:
     filename = str((args or {}).get("filename", ""))
     content = "" if (args or {}).get("content") is None else str((args or {}).get("content", ""))
     mode = str((args or {}).get("mode", "create")).strip().lower()

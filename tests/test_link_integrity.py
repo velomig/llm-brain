@@ -22,9 +22,11 @@ def test_local_markdown_links_resolve():
         if any(part.startswith("chroma-index-backup-") for part in markdown.parts):
             continue
         for target in pattern.findall(markdown.read_text(encoding="utf-8", errors="replace")):
-            local = target.split("#", 1)[0]
-            if not local or target.startswith(("http://", "https://", "mailto:")):
+            local = target.strip("<>").split("#", 1)[0]
+            if not local or local.startswith(("http://", "https://", "mailto:")):
                 continue
+            # Codex file links support an absolute path followed by a line number.
+            local = re.sub(r":\d+$", "", local)
             if not (markdown.parent / local).exists():
                 broken.append((str(markdown.relative_to(ROOT)), target))
 

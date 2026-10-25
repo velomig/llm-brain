@@ -6,7 +6,6 @@ re-ingesting a file replaces its old chunks instead of duplicating them.
 """
 from __future__ import annotations
 
-from io import BytesIO
 import re
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from brain import graph, sensory, store
 from brain.chunking import chunk_markdown
 from brain.embeddings import EmbeddingUnavailable, embed_documents, text_only_embedding
 from brain.memory import MemoryUnit
+from brain.utils import path_lock
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".pdf"}
 # Still images: each is described + OCR'd by a vision model, then stored as text.
@@ -43,16 +43,7 @@ def is_supported_document(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_MEDIA
 
 
-def _require_pypdf():
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise RuntimeError("PDF ingestion requires pypdf. Run: ./.venv/bin/python -m pip install -r requirements.txt") from exc
-    return PdfReader
-
-
 _SOFT_HYPHEN = re.compile(r"([A-Za-z])-\n([a-z])")
-_BLANK_PAGE = re.compile(r"this page (?:is )?intentionally left blank", re.IGNORECASE)
 _STRUCT_HEADING = re.compile(
     r"^\s*((?:MODULE|PART|UNIT|CHAPTER|SECTION|EXEMPLAR|APPENDIX)\s+[\dIVXLC]+[^\n]{0,90})$",
     re.IGNORECASE | re.MULTILINE,
@@ -67,15 +58,9 @@ def _normalize_pdf_text(text: str) -> str:
 
 
 def extract_pdf_text(data: bytes | str | Path) -> str:
-    PdfReader = _require_pypdf()
-    reader = PdfReader(BytesIO(data) if isinstance(data, bytes) else str(data))
-    pages = []
-    for i, page in enumerate(reader.pages, 1):
-        text = (page.extract_text() or "").strip()
-        if not text or _BLANK_PAGE.search(text):   # skip empty / "intentionally left blank" pages
-            continue
-        pages.append(f"Page {i}\n{text}")
-    return _normalize_pdf_text("\n\n".join(pages).strip())
+    from brain.pdf import extract_text
+
+    return _normalize_pdf_text(extract_text(data))
 
 
 def describe_image_file(path: str | Path, model: str | None = None) -> str:
@@ -100,7 +85,24 @@ def read_document(path: str | Path, vision_model: str | None = None) -> tuple[st
     raise ValueError(f"unsupported document type: {p.suffix}")
 
 
+def ingestion_lock(source: str, model: str | None = None):
+    """Serialize source replacement across web workers and CLI processes."""
+    import hashlib
+
+    key = hashlib.sha256((store.collection_name(model) + "\0" + source).encode()).hexdigest()
+    return path_lock(config.DB_DIR / ("ingest_" + key), config.DB_DIR, prefix="ingest")
+
+
 def ingest_document_text(
+    text: str, filename: str, source: str, category: str | None = None,
+    importance: int = 3, max_chars: int | None = None, replace: bool = True,
+    model: str | None = None,
+) -> tuple[int, str]:
+    with ingestion_lock(source, model):
+        return _ingest_document_text_locked(text, filename, source, category, importance, max_chars, replace, model)
+
+
+def _ingest_document_text_locked(
     text: str,
     filename: str,
     source: str,
@@ -182,6 +184,15 @@ def ingest_markdown_text(*args, **kwargs) -> tuple[int, str]:
 
 
 def ingest_file(
+    path: str | Path, category: str | None = None, importance: int = 3,
+    max_chars: int | None = None, replace: bool = True, model: str | None = None,
+    vision_model: str | None = None,
+) -> tuple[int, str]:
+    with ingestion_lock(str(Path(path).resolve()), model):
+        return _ingest_file_locked(path, category, importance, max_chars, replace, model, vision_model)
+
+
+def _ingest_file_locked(
     path: str | Path,
     category: str | None = None,
     importance: int = 3,

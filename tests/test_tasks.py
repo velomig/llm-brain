@@ -6,11 +6,18 @@ write/send/destructive tool — instead parking it in the pending-approval queue
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import config
 from brain import tasks
 from brain.toolkit import pending
+
+
+def completed(summary="done"):
+    return json.dumps({"status": "completed", "summary": summary,
+                       "evidence": ["The requested result was observed."]})
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +50,7 @@ def test_read_only_task_runs_and_completes(monkeypatch):
     def fake_loop(system, user, specs, dispatch, **kwargs):
         result = dispatch("get_current_datetime", {})
         assert "iso" in result  # read-only tool actually executed
-        return "It is now.", [{"tool": "get_current_datetime"}]
+        return completed("It is now."), [{"tool": "get_current_datetime"}]
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
 
@@ -101,7 +108,7 @@ def test_claimed_task_is_not_run_twice(monkeypatch):
 
     def fake_loop(system, user, specs, dispatch, **kwargs):
         calls.append(user)
-        return "ok", []
+        return completed("ok"), []
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
     first = tasks.run_one()
@@ -128,7 +135,7 @@ def test_web_search_after_file_read_is_refused(monkeypatch):
         assert "content" in content
         leaked = dispatch("web_search", {"query": "PRIVATE-CONTENT-FROM-FILE"})
         assert leaked.get("error")
-        return "done", [{"tool": "read_file"}]
+        return completed(), [{"tool": "read_file"}]
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
 
@@ -155,7 +162,7 @@ def test_stock_quotes_must_be_named_in_the_task_prompt(monkeypatch):
         assert "content" in content
         leaked = dispatch("get_stock_quotes", {"tickers": ["XK7Q2", "VTI"]})
         assert "XK7Q2" in leaked["error"]
-        return "done", [{"tool": "get_stock_quotes"}]
+        return completed(), [{"tool": "get_stock_quotes"}]
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
 
@@ -174,7 +181,7 @@ def test_web_search_underived_query_is_refused_even_first(monkeypatch):
     def fake_loop(system, user, specs, dispatch, **kwargs):
         refused = dispatch("web_search", {"query": "secret project codename ORCHID"})
         assert refused.get("error")
-        return "done", []
+        return completed(), []
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
     tasks.run_one()
@@ -197,7 +204,7 @@ def test_web_search_first_with_prompt_derived_query_is_allowed(monkeypatch):
         assert not first.get("error")
         second = dispatch("web_search", {"query": "best BSN programs in Colorado"})
         assert second.get("error")   # one search per task
-        return "done", [{"tool": "web_search"}]
+        return completed(), [{"tool": "web_search"}]
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
 
@@ -223,7 +230,7 @@ def test_failed_tool_does_not_disable_background_web_search(monkeypatch):
         assert failed.get("error")
         result = dispatch("web_search", {"query": "Example City weather"})
         assert not result.get("error")
-        return "done", [{"tool": "web_search"}]
+        return completed(), [{"tool": "web_search"}]
 
     monkeypatch.setattr(tasks.llm, "chat_with_tools", fake_loop)
 
@@ -257,7 +264,7 @@ def test_interrupted_claim_requeues_once_then_fails(monkeypatch):
     assert tasks.run_one() is None   # queue is drained, not stuck
 
 
-def test_approval_resolution_completes_the_parent_task(monkeypatch):
+def test_approval_resolution_requeues_the_parent_task(monkeypatch):
     """Approving the parked action must reconcile the task that queued it —
     otherwise the task stays 'awaiting_approval' forever."""
     from brain import tools as tools_facade
@@ -275,7 +282,17 @@ def test_approval_resolution_completes_the_parent_task(monkeypatch):
 
     tools_facade.approve_pending(action_id)
     after = tasks.get(done["id"])
-    assert after["status"] == "done"
+    assert after["status"] == "queued"
+
+    def continue_loop(system, user, specs, dispatch, **kwargs):
+        assert action_id not in user  # original task stays the outbound allowlist
+        assert "call SSA" in kwargs["history"][0]["content"]
+        assert '"status": "approved"' in kwargs["history"][0]["content"]
+        return completed("Reminder created."), []
+
+    monkeypatch.setattr(tasks.llm, "chat_with_tools", continue_loop)
+    resumed = tasks.run_one()
+    assert resumed["status"] == "done"
     assert after["approval_outcomes"] == {action_id: "approved"}
 
 

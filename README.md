@@ -62,6 +62,31 @@ the system keeps your name out of outbound web searches.
 In-chat commands: `/save <text>`, `/summarize <category>`, `/recall <text>`
 (shows what *would* be retrieved, with score breakdown), `/stats`, `/quit`.
 
+## Resumable background tasks
+
+Queue a task with `task_runner.py --add "..."`, then run queued work with
+`task_runner.py --once` (or your existing scheduled runner). Writes still pause
+for review. After approval, the next runner pass continues with saved tool
+observations and the approved action's result; approval alone does not complete
+the task. Repeated proposals with identical tool arguments within one task reuse
+the existing action rather than executing it twice.
+
+Each running attempt has a renewable lease and an ownership token. Interrupted
+runs preserve their proposals and checkpoints. Completion requires a structured
+model report with a summary and evidence; invalid reports, tool-only failures,
+and exhausted tool budgets are recorded separately from success. This checks
+execution status and the report contract; it is not independent verification of
+every factual claim in the model's answer.
+
+`GET /api/tasks` includes `observations`, `stop_reason`, and any error. An explicit
+`POST /api/tasks/run` with a task `id` can retry blocked, failed, or
+budget-exhausted work from its saved observations. The scheduled runner only
+claims queued work, so those states do not cause an automatic retry loop.
+
+Memory undo refuses to overwrite subsequent edits, including edits to a merged
+memory or its sources. Older approved memory actions that lack a post-action
+snapshot require manual restoration.
+
 ## Google Calendar (optional)
 
 Will can read live Google Calendar events and can propose event creation,
@@ -244,11 +269,17 @@ A single-page UI (FastAPI backend + vanilla JS, no build step) over the same
   long-term memories or persistent cognitive/self-model prompt blocks, while all
   durable Neural Map storage remains untouched. `/memory on` reconnects the
   session; `/memory off` disconnects it without clearing the current transcript.
-- **Version-aware macOS launcher** — the app compares a content fingerprint of
+- **Version-aware macOS launcher** — the bundled AppleScript app compares a content fingerprint of
   the running Python backend with the workspace before opening the UI. If the
   backend is stale (or predates the build endpoint), launchd is force-restarted
   and the launcher waits for the current server. Fingerprint checks authenticate
   with a header so the token is not written into request URLs or logs.
+- **Installed desktop launcher** — `launchd/neural-map` is the shell launcher
+  used by `/Applications/Neural Map.app`. It checks the authenticated API and
+  waits up to two minutes for the existing launchd service during a cold login.
+  It never starts a competing Python server in Terminal or opens Chrome before
+  the API responds. This launcher does not perform the AppleScript app's source
+  fingerprint comparison.
 - **Persistent cognitive state** — a structured goal stack, world model, and
   belief ledger sits beside long-term memory. It is injected into every chat
   prompt as current working state, while Source of Truth, current user
@@ -378,6 +409,13 @@ the stable `/Users/<account>/Documents/LLM Brain` path; that path may be a
 symlink to an external-volume workspace. Install it the same way as the server
 agent in `/Library/LaunchAgents`:
 
+The watcher uses `ProcessType=Background` and low-priority disk I/O so scanning
+the vault does not compete equally with the web UI at login. For the web server
+agent, `ProcessType=Interactive` gives its CPU and disk work the scheduling
+priority of an interactive app. These settings must be reloaded through launchd
+or applied by the next login; a normal process restart alone does not reload a
+changed plist. Verify cold-start improvements after a restart.
+
 ```bash
 sudo cp launchd/com.neuralmap.vaultwatch.plist /Library/LaunchAgents/
 sudo chown root:wheel /Library/LaunchAgents/com.neuralmap.vaultwatch.plist
@@ -414,8 +452,14 @@ Watch mode leaves stored chunks intact if a previously seen file disappears,
 which protects you from temporary folder or drive issues. Add `--delete-removed`
 when you want file deletion to erase those chunks too.
 
-PDF ingestion extracts embedded text with `pypdf`; scanned image-only PDFs need
-OCR first.
+PDF ingestion extracts embedded text with `pypdf` 6.15.0 or newer; scanned
+image-only PDFs need OCR first. Parsing runs in a separate process, one PDF at a
+time per database, with defaults of 30 seconds, 512 MiB of memory, 2,000 pages,
+and 5 million extracted characters. The existing 25 MB upload limit also applies.
+Tune these limits with `NEURAL_MAP_PDF_TIMEOUT_SECONDS`, `NEURAL_MAP_PDF_MEMORY_MB`,
+`NEURAL_MAP_PDF_MAX_PAGES`, and `NEURAL_MAP_PDF_MAX_TEXT_CHARS`. A file that exceeds
+a limit is rejected before ingestion changes its stored version. Process memory
+monitoring must be available; restrictive execution sandboxes may block it.
 
 Image ingestion (`.png/.jpg/.jpeg/.gif/.webp/.bmp/.tiff`) passes each image to a
 local vision model that writes a description **and** transcribes visible text

@@ -7,6 +7,7 @@ retrieval, and models that do not recognize it still receive a consistent prompt
 from __future__ import annotations
 
 import ollama
+import httpx
 
 import config
 from brain import log
@@ -20,6 +21,13 @@ class EmbeddingUnavailable(RuntimeError):
 
 def _is_embedding_unavailable(exc: Exception) -> bool:
     message = str(exc).lower()
+    if isinstance(exc, (ConnectionError, TimeoutError, httpx.TransportError)):
+        return True
+    if isinstance(exc, ollama.ResponseError):
+        if exc.status_code in {502, 503, 504}:
+            return True
+        if exc.status_code == 404 and "model" in message and "not found" in message:
+            return True
     return "does not support embeddings" in message or ("embedding" in message and "not support" in message)
 
 

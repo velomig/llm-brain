@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import contextvars
+from contextlib import contextmanager
 import os
 import threading
 import uuid
@@ -14,6 +16,17 @@ from brain.utils import file_lock
 
 PENDING_FILE = config.DB_DIR / ".neural_map_pending_actions.json"
 _LOCK = threading.Lock()
+_TASK_CONTEXT = contextvars.ContextVar("pending_task_context", default=None)
+
+
+@contextmanager
+def task_context(task_id: str, attempt_id: str):
+    token = _TASK_CONTEXT.set({"task_id": task_id, "attempt_id": attempt_id})
+    try:
+        yield
+    finally:
+        _TASK_CONTEXT.reset(token)
+
 
 
 def _state_lock():
@@ -112,6 +125,7 @@ def create(
             "status": "pending",
             "created_at": now_iso(),
         }
+        action.update(_TASK_CONTEXT.get() or {})
         data["actions"].append(action)
         _write(data)
         return action

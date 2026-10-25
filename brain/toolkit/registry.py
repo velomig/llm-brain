@@ -10,6 +10,7 @@ import config
 from brain import log
 from brain.execution import context_aware_execution
 from brain.memory import now_iso
+from brain.utils import path_lock
 from brain.toolkit import action_packages, basic, email, files, google_calendar, governance, lessons, local_state, memory_tools, pending, perspective_update, project, sandbox, source_truth, system_status
 
 READ_ONLY = "read_only"
@@ -454,14 +455,21 @@ def approve_pending(action_id: str) -> dict:
     action = pending.get(action_id)
     if action is None:
         return {"error": "pending action not found"}
+    with governance.action_lock(action):
+        return _approve_pending_locked(action_id)
+
+
+def _approve_pending_locked(action_id: str) -> dict:
+    action = pending.get(action_id)
+    if action is None:
+        return {"error": "pending action not found"}
     if action.get("status") != "pending":
         return {"error": f"pending action is already {action.get('status')}"}
     # Atomically claim the action FIRST. Without this, two racing approvals
     # (double-click, retried request) both pass the status check above and both
     # execute — a duplicated external send. Only the claim winner runs. Claiming
-    # before the freshness check also means no other approval's side effects can
-    # slip between that check and execution; only a non-approval writer can
-    # still race the (now milliseconds-wide) check-to-execute window.
+    # before the freshness check prevents a second execution of this action.
+    # The shared target lock also protects against other actions and direct writers.
     if pending.claim(action_id, {"approval_started_at": now_iso()}) is None:
         current = pending.get(action_id) or {}
         return {"error": f"pending action is already {current.get('status', 'resolved')}"}
@@ -512,6 +520,15 @@ def approve_pending(action_id: str) -> dict:
         resolved = pending.get(action_id) or {}
         governance.append_audit(resolved, "failed", result)
         return {"action": resolved, "result": result, "execution_failed": True}
+    if action.get("tool") in governance.MEMORY_UNDO_TOOLS:
+        pending.update_action(action_id, {
+            "memory_post_snapshot": governance.memory_post_snapshot(
+                action["tool"], action.get("args") or {}, result),
+        })
+    if snapshot.get("kind") in {"file", "local_record"}:
+        pending.update_action(action_id, {
+            "post_snapshot": governance.post_action_snapshot(action.get("tool", ""), action.get("args") or {}),
+        })
     pending.resolve(action_id, "approved", result)
     resolved = pending.get(action_id) or {}
     governance.append_audit(resolved, "approved", result)
@@ -534,6 +551,12 @@ def reject_pending(action_id: str) -> dict:
 
 
 def undo_pending(action_id: str) -> dict:
+    # Serialize retried requests through both the restore and the undo receipt.
+    with path_lock(config.DB_DIR / ("undo_" + action_id), config.DB_DIR, prefix="undo"):
+        return _undo_pending_locked(action_id)
+
+
+def _undo_pending_locked(action_id: str) -> dict:
     action = pending.get(action_id)
     if action is None:
         return {"error": "pending action not found"}
